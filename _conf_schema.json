@@ -1,0 +1,68 @@
+{
+    "CANVAS_WIDTH": {
+        "description": "画布宽度",
+        "hint": "",
+        "type": "int",
+        "default": 600
+    },
+    "CANVAS_HEIGHT": {
+        "description": "画布高度",
+        "hint": "",
+        "type": "int",
+        "default": 600
+    },
+    "AVATAR_SIZE": {
+        "description": "头像大小",
+        "hint": "",
+        "type": "int",
+        "default": 180
+    },
+    "SPACING_AVATAR_NAME": {
+        "description": "头像与名称间距",
+        "hint": "",
+        "type": "int",
+        "default": 20
+    },
+    "SPACING_NAME_DESC": {
+        "description": "名称与描述间距",
+        "hint": "",
+        "type": "int",
+        "default": 25
+    },
+    "SPACING_DESC_ANALYSIS": {
+        "description": "描述与解析间距",
+        "hint": "",
+        "type": "int",
+        "default": 30
+    },
+    "DESC_FONT_SIZE": {
+        "description": "描述字体大小",
+        "hint": "",
+        "type": "int",
+        "default": 38
+    },
+    "ANALYSIS_FONT_SIZE": {
+        "description": "解析字体大小",
+        "hint": "",
+        "type": "int",
+        "default": 28
+    },
+    "ANALYSIS_LINE_HEIGHT_FACTOR": {
+        "description": "解析行高因子",
+        "hint": "",
+        "type": "float",
+        "default": 1.6
+    },
+    "ANALYSIS_WIDTH_RATIO": {
+        "description": "解析宽度比例",
+        "hint": "",
+        "type": "float",
+        "default": 0.85
+    },
+    "NAME_FONT_SIZE": {
+        "description": "名称字体大小",
+        "hint": "",
+        "type": "int",
+        "default": 55
+    }
+}

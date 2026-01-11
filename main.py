@@ -6,7 +6,11 @@ import os
 import sqlite3
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-
+from astrbot.api.event.filter import (
+    EventMessageType,
+    PermissionType,
+    PlatformAdapterType,
+)
 import astrbot.api.message_components as Comp
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register, StarTools
@@ -31,7 +35,46 @@ INTRO_INFO = [
                 "全连祈祷中...",
                 "全良祈祷中...",
                 "#&*D祈祷中...",
-                "全可祈祷中..."
+                "全可祈祷中...",
+                "全连祈祷中...希望这次不掉...",
+                "超级combo祈祷中...别断了...",
+                "极限打击祈祷中...不掉音符...",
+                "满分之梦祈祷中...求个好运气...",
+                "极限挑战祈祷中...求不手抖...",
+                "击鼓神力祈祷中...手速能跟上吗...",
+                "节奏神降祈祷中...这次一定要过...",
+                "音符全中祈祷中...求个完美结局...",
+                "秒杀全图祈祷中...这一波能不能过...",
+                "太鼓之魂祈祷中...请给我好运...",
+                "全良祈祷中...请不要失误...",
+                "不掉一分祈祷中...让所有音符都听话...",
+                "全能挑战祈祷中...这次必须拿S...",
+                "无敌节奏祈祷中...希望没有任何失误...",
+                "完美击打祈祷中...加油，别掉了...",
+                "极限连击祈祷中...这次不再丢分...",
+                "连环打击祈祷中...希望手速能跟上...",
+                "音符流畅祈祷中...求个完美音符...",
+                "无误差祈祷中...手速和节奏齐飞...",
+                "鼓声低语中...命运的回响已起...",
+                "音符呢喃中...时光与节奏交织...",
+                "古神祝福中...每一击皆为永恒...",
+                "节奏涌动中...无尽的波动在召唤...",
+                "灵魂共振中...节奏与我同在...",
+                "无声的祈祷中...那道光将引领前行...",
+                "沉寂低语中...鼓动将划破虚空...",
+                "回响之力中...愿音符赐予力量...",
+                "黑暗涌动中...节奏的引力将至...",
+                "远古旋律中...音符注定归于命运...",
+                "时间冻结中...每一次鼓击都为启示...",
+                "古老旋律响起中...灵魂与节奏共鸣...",
+                "天启低语中...鼓声是破晓的号角...",
+                "无尽回声中...音符定将指引道路...",
+                "寂静召唤中...节奏是永恒的序章...",
+                "虚无低语中...每个音符是通往未知的钥匙...",
+                "命运低语中...音符与节奏交织成网...",
+                "神秘低语中...鼓声是古老力量的复苏...",
+                "黑暗祝福中...音符的回响带来永恒的誓言...",
+                "永恒低语中...节奏之力是无尽的庇佑..."
              ]
 FORTUNE_TEXTS = ["大吉", "小吉", "吉", "末吉", "凶", "大凶"]
 COLORS = [
@@ -113,7 +156,7 @@ ADVICE_DONT = [
     "越级",
     "熬夜打太鼓达人",
 ]
-
+SCORE_NONE_INDEX = ["none-ji","none-ji-shine", "none-baicui","none-fenya"]
 
 def init_db():
     """
@@ -361,7 +404,7 @@ def update_luck_value(user_id: str, date_str: str, new_value: int):
     conn.close()
 
 
-@register("taiko_rp", "Rio", "测一下taiko人品", "0.2")
+@register("taiko_rp", "Rio", "测一下taiko人品", "0.3")
 class taikoRP(Star):
     CANVAS_WIDTH = 800  # 画布宽度
     CANVAS_HEIGHT = 800  # 画布高度
@@ -567,15 +610,20 @@ class taikoRP(Star):
         :return: 生成的图片临时文件路径，失败返回None
         """
         # record_id=rp_data["id"]
+        user_name = rp_data.get("user_name","???")
         record_luck_value = rp_data["luck_value"]
         record_fortune_text = rp_data["fortune_text"]
         record_color = rp_data["color"]
         record_advice_do = rp_data["advice_do"]
         record_advice_dont = rp_data["advice_dont"]
-
-        rp_id = rp_data.get("rp_id","none")
+    
+        none_score = random.choice(SCORE_NONE_INDEX)
+        rp_id = rp_data.get("rp_id", none_score)
         rp_name = f"【今日RP值: {record_luck_value}】"
-        rp_desc = f"今日签: {record_fortune_text} 幸运色: {record_color}"
+        rp_desc = (
+                    f"Hi~ “{user_name}” \n"
+                    f"今日签: {record_fortune_text} 幸运色: {record_color}"
+                  )
         rp_analysis = (
                 f'宜: {record_advice_do} \n'+
                 f'忌: {record_advice_dont}'
@@ -586,6 +634,16 @@ class taikoRP(Star):
         canvas_height = self.CANVAS_HEIGHT
         canvas = PILImage.new("RGB", (canvas_width, canvas_height), (255, 255, 255))
         draw = ImageDraw.Draw(canvas)
+
+        # x.获取当前日期，格式化为YYYYMMDD
+        current_date = datetime.now().strftime("%Y.%m.%d %H:%M:%S")
+        LUP_TAG = f"Date:{current_date}"
+        # x.2绘制日期文本（左上角）
+        date_font = self.font_regular.font_variant(size=16)  # 设置较小的字体
+        date_w, date_h = self._get_text_size(LUP_TAG, date_font)
+        date_x = 10  # 离左边的距离
+        date_y = 10  # 离上边的距离
+        draw.text((date_x, date_y), current_date, fill=(0, 0, 0), font=date_font)
 
         # 2. 预加载所有元素并计算尺寸（用于总高度计算）
         # 2.1 头像尺寸【核心修改：放大到280x280】
@@ -718,6 +776,7 @@ class taikoRP(Star):
             logger.error(f"合成图片失败：{str(e)}")
             return None
 
+    @filter.permission_type(PermissionType.ADMIN)
     @filter.command("rp_init")
     async def rp_init(self, event: AstrMessageEvent):
         user_id = event.get_sender_id()
@@ -748,12 +807,8 @@ class taikoRP(Star):
     @filter.command("rp")
     async def rp(self, event: AstrMessageEvent):
         """ 获取今日rp """ # 这是 handler 的描述，将会被解析方便用户了解插件内容。建议填写。
-        user_id = event.get_sender_name()
+        user_id = event.get_sender_id()
         logger.info("user_id:"+user_id)
-        # message_str = event.message_str # 用户发的纯文本消息字符串
-        # message_chain = event.get_messages() # 用户所发的消息的消息链 # from astrbot.api.message_components import *
-        # logger.info(message_chain)
-        # yield event.plain_result(f"Hello, {user_id}, 你发了 {message_str}!") # 发送一条纯文本消息
         record = get_today_record(user_id)
         if record is None:
                 # 当天未抽，随机生成
@@ -761,7 +816,7 @@ class taikoRP(Star):
         else:
             # 已有记录，直接返回
             record = record
-        val_score_id = "none"
+        val_score_id = random.choice(SCORE_NONE_INDEX)
         if record['luck_value']>99:
             val_score_id = "ji"
         elif record['luck_value']>94:
@@ -777,15 +832,58 @@ class taikoRP(Star):
         elif record['luck_value']>49:
             val_score_id = "baicui"
         else:
-            val_score_id = "none"
+            val_score_id = random.choice(SCORE_NONE_INDEX)
         record["rp_id"]=val_score_id
+        record["user_name"] = event.get_sender_name()
         
         await self.send_rendered_rp(event, record, user_id)
+
+    @filter.permission_type(PermissionType.ADMIN)
+    @filter.command("rp_test")
+    async def rp_cmd(self, event: AstrMessageEvent, rp_score:int):
+        """ 管理员命令示例 """
+        user_id = event.get_sender_id()
+        if user_id in self.admins_id:
+            await event.send(event.plain_result("管理员命令执行成功！"))
+            """ 获取今日rp """ # 这是 handler 的描述，将会被解析方便用户了解插件内容。建议填写。
+            user_id = event.get_sender_id()
+            logger.info("user_id:"+user_id)
+            record = get_today_record(user_id)
+            if record is None:
+                    # 当天未抽，随机生成
+                    record = create_today_record(user_id)
+            else:
+                # 已有记录，直接返回
+                record = record
+            record['luck_value'] = rp_score
+            val_score_id = random.choice(SCORE_NONE_INDEX)
+            if record['luck_value']>99:
+                val_score_id = "ji"
+            elif record['luck_value']>94:
+                val_score_id = "ziya"
+            elif record['luck_value']>89:
+                val_score_id = "fenya"
+            elif record['luck_value']>79:
+                val_score_id = "jinya"
+            elif record['luck_value']>69:
+                val_score_id = "yincui"
+            elif record['luck_value']>59:
+                val_score_id = "tongcui"
+            elif record['luck_value']>49:
+                val_score_id = "baicui"
+            else:
+                val_score_id = random.choice(SCORE_NONE_INDEX)
+            record["rp_id"]=val_score_id
+            record["user_name"] = event.get_sender_name()
+            
+            await self.send_rendered_rp(event, record, user_id)
+        else:
+            await event.send(event.plain_result("无权限，请联系管理员。"))
 
     async def send_rendered_rp(
         self, event: AstrMessageEvent, rp_data: dict, user_id: str
     ):
-        """合成并发送小猪图片"""
+        """合成并发送图片"""
         # 使用线程池异步执行CPU密集型任务
         img_path = await asyncio.to_thread(self.render_rp_image, rp_data)
         if img_path and img_path.exists():
@@ -797,8 +895,8 @@ class taikoRP(Star):
                 group_id = event.get_group_id()
                 # logger.info("3-group:"+group_id)
                 # logger.info("3-user:"+user_id)
-                # if group_id:
-                #     chain.insert(0, Comp.At(qq=user_id))
+                if group_id:
+                    chain.insert(0, Comp.At(qq=user_id))
                 # logger.info("4")
                 await event.send(event.chain_result(chain))
                 # logger.info("5")
@@ -817,8 +915,8 @@ class taikoRP(Star):
 
     async def send_fallback_msg(self, event: AstrMessageEvent, rp_data: dict):
         """降级发送：原始图片 + 纯文本"""
-        # score_name = rp_data.get("name", "未知")
-        rp_id = rp_data.get("rp_id", "none")
+        none_score = random.choice(SCORE_NONE_INDEX)
+        rp_id = rp_data.get("rp_id", none_score)
         val_score = "  "
         if rp_data['luck_value']>99:
             val_score = "極"
@@ -840,6 +938,7 @@ class taikoRP(Star):
             # f"【今日rp】\n名称：{score_name}\n描述：{fortune_desc}\n解析：{rp_analysis}"
             f"【今日运势】\n"
             f"《{val_score}》\n"
+            f"Hi~“ {event.get_sender_name()} ” \n"
             f"今日人品（RP）值：{rp_data['luck_value']}\n"
             f"今日签：{rp_data['fortune_text']}\n"
             f"幸运色：{rp_data['color']}\n"

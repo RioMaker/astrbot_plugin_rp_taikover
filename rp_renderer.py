@@ -32,8 +32,8 @@ class RpImageRenderer:
         self.font_dir = self.resource_dir / "font"
         self.rank_catalog = rank_catalog
         config = config or {}
-        self.canvas_width = int(config.get("CANVAS_WIDTH", 800))
-        self.canvas_height = int(config.get("CANVAS_HEIGHT", 1000))
+        self.canvas_width = int(config.get("CANVAS_WIDTH", 960))
+        self.canvas_height = int(config.get("CANVAS_HEIGHT", 680))
         self.avatar_size = int(config.get("AVATAR_SIZE", 220))
         self.spacing_avatar_name = int(config.get("SPACING_AVATAR_NAME", 20))
         self.spacing_name_desc = int(config.get("SPACING_NAME_DESC", 25))

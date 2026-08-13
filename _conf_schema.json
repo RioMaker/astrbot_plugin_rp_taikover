@@ -3,13 +3,13 @@
         "description": "画布宽度",
         "hint": "",
         "type": "int",
-        "default": 800
+        "default": 960
     },
     "CANVAS_HEIGHT": {
-        "description": "画布最小高度",
-        "hint": "内容较多时会自动增长，避免字段越界",
+        "description": "RP 图高度兼容配置",
+        "hint": "D3C 横版会按内容自动决定实际高度，此项保留用于旧配置兼容",
         "type": "int",
-        "default": 1000
+        "default": 680
     },
     "AVATAR_SIZE": {
         "description": "等级图标大小",

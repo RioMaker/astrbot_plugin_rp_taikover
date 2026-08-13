@@ -27,3 +27,11 @@ python local_test/preview.py --score 0 25 88 100 --user-name 小咚 --leaderboar
 雪花参数可在 AstrBot 插件配置中修改：`STATIC_BLOCK_SIZE` 越大颗粒越粗，
 `STATIC_GLITCH_BANDS` 越大横向撕裂带越密。代码默认值位于
 `rp_renderer_effects.py` 的 `RpImageRenderer.__init__()`。
+
+## 布局试验场
+
+正式布局定稿前，可以一次生成多个带代号的候选方案：
+
+    python local_test/layout_lab.py --score 88 --variants D3A D3B D3C
+
+输出位于 `local_test/layout_lab_output/`。D3A/D3B/D3C 分别是三种横向矩形比例：短字段环绕中心大 Logo，可能超长的太鼓建议和今日事件放在底部双栏。所有候选方案使用同一组抽取内容，便于只比较布局；该目录已被 Git 忽略，不会混入插件发布包。

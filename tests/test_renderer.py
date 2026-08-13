@@ -6,6 +6,7 @@ from PIL import Image, ImageDraw
 
 from rp_core import ContentStore, RankCatalog, count_scores_by_rank, select_content_path
 from rp_renderer_effects import RpImageRenderer
+from local_test.layout_lab import LayoutLab, VARIANTS, VARIANT_SIZES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,9 +30,9 @@ def test_special_backgrounds_and_normal_image_render(tmp_path):
         paths[score] = renderer.render_rp_image(record, tmp_path / f"rp_{score}.png")
 
     with Image.open(paths[0]).convert("RGB") as image_zero:
-        assert image_zero.width == 800
-        assert image_zero.height >= 1000
-        samples = [image_zero.getpixel((x, 20)) for x in range(20, 780, 40)]
+        assert image_zero.width == 960
+        assert 520 <= image_zero.height <= 900
+        samples = [image_zero.getpixel((x, 20)) for x in range(20, 940, 40)]
         assert all(max(red, green, blue) - min(red, green, blue) <= 12 for red, green, blue in samples)
         assert len(set(samples)) > 10
         edge_samples = [
@@ -43,9 +44,9 @@ def test_special_backgrounds_and_normal_image_render(tmp_path):
             max(red, green, blue) - min(red, green, blue) <= 12
             for red, green, blue in edge_samples
         )
-        assert len(set(edge_samples)) > 15
+        assert len(set(edge_samples)) >= max(10, len(edge_samples) // 2)
     with Image.open(paths[100]).convert("RGB") as image_hundred:
-        samples = [image_hundred.getpixel((x, 20)) for x in range(20, 780, 40)]
+        samples = [image_hundred.getpixel((x, 20)) for x in range(20, 940, 40)]
         assert len(set(samples)) > 10
         assert any(max(pixel) - min(pixel) > 35 for pixel in samples)
         horizontal_bands = [
@@ -61,8 +62,8 @@ def test_special_backgrounds_and_normal_image_render(tmp_path):
             for band in horizontal_bands
         )
     with Image.open(paths[50]) as image_normal:
-        assert image_normal.width == 800
-        assert image_normal.height >= 1000
+        assert image_normal.width == 960
+        assert 520 <= image_normal.height <= 900
 
 
 def test_low_score_never_loads_gray_rank_icon(tmp_path):
@@ -76,8 +77,8 @@ def test_low_score_never_loads_gray_rank_icon(tmp_path):
     record.update({"user_name": "低分测试", "rp_id": "none-ji"})
     output = renderer.render_rp_image(record, tmp_path / "rp_25.png")
     with Image.open(output) as image:
-        assert image.width == 800
-        assert image.height >= 1000
+        assert image.width == 960
+        assert image.height >= 520
 
 
 def test_long_lucky_color_wraps_within_canvas(tmp_path):
@@ -91,6 +92,8 @@ def test_long_lucky_color_wraps_within_canvas(tmp_path):
             "color": long_color,
         }
     )
+    record["content_fields"] = dict(record["content_fields"])
+    record["content_fields"]["color"] = long_color
 
     canvas = Image.new("RGB", (renderer.canvas_width, renderer.canvas_height))
     draw = ImageDraw.Draw(canvas)
@@ -118,8 +121,8 @@ def test_long_lucky_color_wraps_within_canvas(tmp_path):
 
     output = renderer.render_rp_image(record, tmp_path / "rp_long_color.png")
     with Image.open(output) as image:
-        assert image.width == 800
-        assert image.height >= 1000
+        assert image.width == 960
+        assert image.height > 650
 
 
 def test_leaderboard_renders_long_image_with_crowns_and_round_avatars(tmp_path):
@@ -162,3 +165,19 @@ def test_statistics_image_contains_all_cards(tmp_path):
         assert image.size == (1200, 1040)
     assert sum(counts.values()) == 30
     assert set(counts) == {rank.id for rank in ranks.ranks}
+
+
+def test_layout_lab_generates_every_coded_variant(tmp_path):
+    _, ranks, content = renderer_and_data()
+    lab = LayoutLab(ROOT / "resource", ranks)
+    record = content.make_fortune(88, random.Random(88))
+    record.update(
+        {
+            "user_name": "布局试验用户",
+            "rp_id": ranks.result_icon_for_score(88, random.Random(88)),
+        }
+    )
+    for code in VARIANTS:
+        output = lab.render_variant(code, record, tmp_path / f"{code}.png")
+        with Image.open(output) as image:
+            assert image.size == (VARIANT_SIZES[code][0], lab.HEIGHT)

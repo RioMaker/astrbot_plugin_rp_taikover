@@ -18,6 +18,17 @@ else:  # 兼容 local_test/preview.py 和直接运行测试
 class RpImageRenderer(BaseRpImageRenderer):
     """全画布特殊效果与低分信号仪表版渲染器。"""
 
+    DAILY_FIELD_COLORS = {
+        "fortune_text": (221, 143, 24),
+        "color": (129, 92, 222),
+        "advice_do": (27, 151, 94),
+        "advice_dont": (220, 70, 76),
+        "taiko_bpm": (15, 143, 171),
+        "taiko_stars": (230, 109, 42),
+        "taiko_advice": (52, 108, 220),
+        "today_events": (126, 78, 202),
+    }
+
     def __init__(self, resource_dir, rank_catalog, config=None):
         super().__init__(resource_dir, rank_catalog, config)
         config = config or {}
@@ -286,87 +297,266 @@ class RpImageRenderer(BaseRpImageRenderer):
             )
         canvas.alpha_composite(overlay)
 
+    @staticmethod
+    def _center_daily_text(draw, width: int, text: str, y: int, font, fill, stroke_fill=None) -> None:
+        box = draw.textbbox((0, 0), text, font=font)
+        draw.text(
+            ((width - (box[2] - box[0])) // 2, y),
+            text,
+            font=font,
+            fill=fill,
+            stroke_width=2 if stroke_fill else 0,
+            stroke_fill=stroke_fill,
+        )
+
+    def _adaptive_daily_font(
+        self,
+        draw,
+        text: str,
+        width: int,
+        max_size: int,
+        min_size: int,
+        max_lines: int,
+        bold: bool = False,
+    ):
+        """正常内容优先用大字号，只在超出目标行数时逐级缩小。"""
+        for size in range(max_size, min_size - 1, -1):
+            font = self.font(size, bold=bold)
+            lines = self._wrap_text(draw, text, font, width)
+            if len(lines) <= max_lines:
+                return font, lines
+        font = self.font(min_size, bold=bold)
+        return font, self._wrap_text(draw, text, font, width)
+
+    def _draw_daily_focus(
+        self,
+        canvas: PILImage.Image,
+        icon_id: str,
+        rp_value: int,
+        center_y: int,
+        size: int,
+        accent: tuple[int, int, int],
+        dark: bool,
+    ) -> None:
+        center_x = canvas.width // 2
+        halo = PILImage.new("RGBA", canvas.size, (0, 0, 0, 0))
+        halo_draw = ImageDraw.Draw(halo)
+        halo_draw.ellipse(
+            (
+                center_x - size // 2 - 58,
+                center_y - size // 2 - 58,
+                center_x + size // 2 + 58,
+                center_y + size // 2 + 58,
+            ),
+            fill=(255, 255, 255, 20 if dark else 112),
+        )
+        halo_draw.ellipse(
+            (
+                center_x - size // 2 - 28,
+                center_y - size // 2 - 28,
+                center_x + size // 2 + 28,
+                center_y + size // 2 + 28,
+            ),
+            fill=(*accent, 25),
+        )
+        canvas.alpha_composite(halo.filter(ImageFilter.GaussianBlur(20)))
+
+        if rp_value < 50:
+            self._draw_compact_signal(
+                canvas,
+                rp_value,
+                (
+                    center_x - size // 2,
+                    center_y - 74,
+                    center_x + size // 2,
+                    center_y + 74,
+                ),
+                rp_value == 0,
+            )
+            return
+
+        icon = self._load_icon(icon_id, (size, size))
+        if icon:
+            canvas.alpha_composite(icon, (center_x - size // 2, center_y - size // 2))
+            return
+        draw = ImageDraw.Draw(canvas)
+        error_font = self.font(16)
+        self._center_daily_text(
+            draw, canvas.width, "等级图加载失败", center_y - 9, error_font, (220, 70, 70, 255)
+        )
+
+    def _draw_daily_radial_item(
+        self,
+        canvas: PILImage.Image,
+        field: str,
+        text: str,
+        label: str,
+        x: int,
+        y: int,
+        width: int,
+        side: str,
+        font,
+        lines: list[str],
+        primary,
+        stroke_fill=None,
+    ) -> None:
+        draw = ImageDraw.Draw(canvas)
+        accent = self.DAILY_FIELD_COLORS.get(field, (100, 116, 139))
+        label_font = self.font(15, bold=True)
+        label_box = draw.textbbox((0, 0), label, font=label_font)
+        label_x = x if side == "left" else x + width - (label_box[2] - label_box[0])
+        draw.text(
+            (label_x, y), label, font=label_font, fill=(*accent, 255),
+            stroke_width=2 if stroke_fill else 0, stroke_fill=stroke_fill,
+        )
+        value_y = y + 27
+        for line in lines:
+            line_box = draw.textbbox((0, 0), line, font=font)
+            line_x = x if side == "left" else x + width - (line_box[2] - line_box[0])
+            draw.text(
+                (line_x, value_y), line, font=font, fill=primary,
+                stroke_width=2 if stroke_fill else 0, stroke_fill=stroke_fill,
+            )
+            value_y += font.size + 5
+
+    def _draw_daily_long_item(
+        self,
+        canvas: PILImage.Image,
+        field: str,
+        text: str,
+        label: str,
+        x: int,
+        y: int,
+        width: int,
+        font,
+        lines: list[str],
+        primary,
+        title_right: bool = False,
+        stroke_fill=None,
+    ) -> None:
+        draw = ImageDraw.Draw(canvas)
+        accent = self.DAILY_FIELD_COLORS.get(field, (100, 116, 139))
+        label_font = self.font(16, bold=True)
+        title = f"●  {label}"
+        title_box = draw.textbbox((0, 0), title, font=label_font)
+        title_x = x + width - (title_box[2] - title_box[0]) if title_right else x
+        draw.text(
+            (title_x, y), title, font=label_font, fill=(*accent, 255),
+            stroke_width=2 if stroke_fill else 0, stroke_fill=stroke_fill,
+        )
+        value_y = y + 31
+        for line in lines:
+            draw.text(
+                (x, value_y), line, font=font, fill=primary,
+                stroke_width=2 if stroke_fill else 0, stroke_fill=stroke_fill,
+            )
+            value_y += font.size + 7
+
     def render_rp_image(
         self, rp_data: Mapping[str, Any], output_path: str | Path | None = None
     ) -> Path:
         rp_value = int(rp_data["luck_value"])
         rank = self.rank_catalog.for_score(rp_value)
         icon_id = str(rp_data.get("rp_id") or rank.icon)
-        user_name = str(rp_data.get("user_name", "???"))
+        user_name = str(rp_data.get("user_name") or "???")
         fields, labels = self._daily_fields(rp_data)
 
-        is_static = rp_value == 0
-        is_rainbow = rp_value == 100
-        is_low = rp_value < 50
-        is_special = is_static or is_rainbow
-        width = self.canvas_width
-        panel_margin = max(34, int(width * 0.055))
-        content_width = width - panel_margin * 2
-        card_gap = 14
+        width = max(960, self.canvas_width)
+        center_x = width // 2
+        center_y = 260
+        logo_size = 238
+        side_margin = 38
+        center_gap = logo_size // 2 + 70
+        side_width = center_x - center_gap - side_margin
+        long_top = center_y + logo_size // 2 + 48
+        long_gap = 44
+        long_width = (width - side_margin * 2 - long_gap) // 2
+        today_x = center_x + logo_size // 2 + 18
+        today_width = width - side_margin - today_x
 
-        measurement = PILImage.new("RGB", (width, 8), "white")
-        measure_draw = ImageDraw.Draw(measurement)
-        meta_font = self.font(15, bold=True)
-        kicker_font = self.font(18, bold=True)
-        score_font = self.font(88, bold=True)
-        rank_font = self.font(18, bold=True)
-        greeting_font = self.font(min(self.desc_font_size, 25))
-        section_font = self.font(22, bold=True)
-        count_font = self.font(14, bold=True)
-        label_font = self.font(16, bold=True)
-        value_font = self.font(min(self.analysis_font_size, 23))
-        value_line_height = max(value_font.size + 8, 30)
-        label_height = max(20, label_font.size + 3)
-
-        hero_top = 70
-        hero_left = panel_margin
-        hero_right = width - panel_margin
-        visual_size = min(174, self.avatar_size)
-        right_text_x = hero_left + 26 + visual_size + 32
-        right_text_width = hero_right - right_text_x - 28
-        greeting = f"Hi，{user_name}"
-        greeting_lines = self._wrap_text(
-            measure_draw,
-            greeting,
-            greeting_font,
-            right_text_width,
+        measure = ImageDraw.Draw(PILImage.new("RGB", (width, 8), "white"))
+        radial_pairs = (
+            ("fortune_text", "color"),
+            ("advice_do", "advice_dont"),
+            ("taiko_bpm", "taiko_stars"),
         )
-        hero_height = max(224, 180 + len(greeting_lines) * (greeting_font.size + 6))
-        hero_bottom = hero_top + hero_height
-
-        section_y = hero_bottom + 27
-        cards_y = section_y + 39
-        card_specs: list[dict[str, Any]] = []
-        current_y = cards_y
-        for row in self._daily_field_rows(fields):
-            columns = len(row)
-            card_width = content_width if columns == 1 else (content_width - card_gap) // 2
-            measured_cards: list[tuple[str, list[str], int]] = []
-            row_height = 0
-            for field in row:
-                lines = self._wrap_text(
-                    measure_draw,
-                    fields[field],
-                    value_font,
-                    card_width - 42,
+        row_offsets = (-116, -12, 92)
+        radial_specs: list[dict[str, Any]] = []
+        overflow_fields: list[str] = []
+        radial_known = {field for pair in radial_pairs for field in pair}
+        for row_offset, pair in zip(row_offsets, radial_pairs):
+            for side, field in zip(("left", "right"), pair):
+                if field not in fields:
+                    continue
+                font, lines = self._adaptive_daily_font(
+                    measure, fields[field], side_width, 26, 18, 2
                 )
-                card_height = 17 + label_height + 8 + len(lines) * value_line_height + 17
-                measured_cards.append((field, lines, card_height))
-                row_height = max(row_height, card_height)
-            for column, (field, lines, _) in enumerate(measured_cards):
-                left = panel_margin + column * (card_width + card_gap)
-                card_specs.append(
+                if len(lines) > 2:
+                    overflow_fields.append(field)
+                    continue
+                radial_specs.append(
                     {
                         "field": field,
+                        "side": side,
+                        "x": side_margin if side == "left" else center_x + center_gap,
+                        "y": center_y + row_offset - 24,
+                        "font": font,
                         "lines": lines,
-                        "box": (left, current_y, left + card_width, current_y + row_height),
                     }
                 )
-            current_y += row_height + card_gap
 
-        calculated_height = current_y - card_gap + 73
-        height = max(self.canvas_height, calculated_height)
+        bottom_specs: list[dict[str, Any]] = []
+        bottom_edges: list[int] = []
+        for field, x, field_width, title_right in (
+            ("taiko_advice", side_margin, long_width, False),
+            ("today_events", today_x, today_width, True),
+        ):
+            if field not in fields:
+                continue
+            font, lines = self._adaptive_daily_font(
+                measure, fields[field], field_width, 27, 18, 3
+            )
+            spec = {
+                "field": field,
+                "x": x,
+                "y": long_top,
+                "width": field_width,
+                "font": font,
+                "lines": lines,
+                "title_right": title_right,
+            }
+            bottom_specs.append(spec)
+            bottom_edges.append(long_top + 31 + len(lines) * (font.size + 7))
+
+        handled = radial_known | {"taiko_advice", "today_events"}
+        extra_fields = overflow_fields + [
+            field for field in fields if field not in handled and field not in overflow_fields
+        ]
+        extra_y = max(bottom_edges, default=long_top) + (18 if bottom_edges else 0)
+        extra_width = width - side_margin * 2
+        for field in extra_fields:
+            font, lines = self._adaptive_daily_font(
+                measure, fields[field], extra_width, 27, 18, 3
+            )
+            bottom_specs.append(
+                {
+                    "field": field,
+                    "x": side_margin,
+                    "y": extra_y,
+                    "width": extra_width,
+                    "font": font,
+                    "lines": lines,
+                    "title_right": False,
+                }
+            )
+            extra_y += 31 + len(lines) * (font.size + 7) + 18
+            bottom_edges.append(extra_y - 18)
+
+        content_bottom = max(bottom_edges, default=long_top)
+        height = max(520, content_bottom + 75)
         size = (width, height)
+        is_static = rp_value == 0
+        is_rainbow = rp_value == 100
         if is_rainbow:
             canvas = self._rainbow_background(size)
         elif is_static:
@@ -377,262 +567,107 @@ class RpImageRenderer(BaseRpImageRenderer):
         rank_rgb = self._rank_rgb(rank.color)
         if is_static:
             primary = (246, 248, 250, 255)
-            secondary = (205, 213, 222, 255)
-            hero_fill = (3, 6, 9, 224)
-            hero_outline = (240, 244, 248, 82)
+            secondary = (210, 218, 227, 255)
             score_color = (248, 250, 252, 255)
+            stroke_fill = (0, 0, 0, 215)
         elif is_rainbow:
             primary = (20, 27, 39, 255)
             secondary = (62, 72, 89, 255)
-            hero_fill = (255, 255, 255, 218)
-            hero_outline = (255, 255, 255, 238)
             score_color = (18, 24, 35, 255)
+            stroke_fill = (255, 255, 255, 205)
         else:
             primary = (24, 32, 45, 255)
-            secondary = (91, 104, 122, 255)
-            hero_fill = (255, 255, 255, 238)
-            hero_outline = (255, 255, 255, 255)
+            secondary = (88, 101, 120, 255)
             score_color = (*rank_rgb, 255)
+            stroke_fill = None
 
         draw = ImageDraw.Draw(canvas)
+        meta_font = self.font(13, bold=True)
         brand = "TAIKO DAILY"
-        current_date = datetime.now().strftime("%Y.%m.%d  %H:%M")
+        current_date = datetime.now().strftime("%Y.%m.%d")
         date_box = draw.textbbox((0, 0), current_date, font=meta_font)
-        if is_special:
-            self._draw_surface(
-                canvas,
-                (panel_margin, 20, panel_margin + 145, 54),
-                17,
-                hero_fill,
-                hero_outline,
-            )
-            self._draw_surface(
-                canvas,
-                (width - panel_margin - (date_box[2] - date_box[0]) - 24, 20, width - panel_margin, 54),
-                17,
-                hero_fill,
-                hero_outline,
-            )
-            draw = ImageDraw.Draw(canvas)
-        draw.text((panel_margin + (12 if is_special else 0), 29), brand, fill=secondary, font=meta_font)
         draw.text(
-            (width - panel_margin - (date_box[2] - date_box[0]) - (12 if is_special else 0), 29),
+            (30, 25), brand, font=meta_font, fill=secondary,
+            stroke_width=2 if stroke_fill else 0, stroke_fill=stroke_fill,
+        )
+        draw.text(
+            (width - 30 - (date_box[2] - date_box[0]), 25),
             current_date,
-            fill=secondary,
             font=meta_font,
-        )
-
-        self._draw_surface(
-            canvas,
-            (hero_left, hero_top, hero_right, hero_bottom),
-            34,
-            hero_fill,
-            hero_outline,
-            shadow=None if is_special else (43, 58, 78, 28),
-            accent=(*rank_rgb, 235),
-        )
-        visual_top = hero_top + (hero_height - visual_size) // 2
-        visual_box = (
-            hero_left + 25,
-            visual_top,
-            hero_left + 25 + visual_size,
-            visual_top + visual_size,
-        )
-        if is_low:
-            self._draw_compact_signal(canvas, rp_value, visual_box, is_static)
-        else:
-            halo = PILImage.new("RGBA", canvas.size, (0, 0, 0, 0))
-            halo_draw = ImageDraw.Draw(halo)
-            halo_draw.ellipse(
-                (
-                    visual_box[0] - 7,
-                    visual_box[1] - 7,
-                    visual_box[2] + 7,
-                    visual_box[3] + 7,
-                ),
-                fill=(*rank_rgb, 26 if not is_rainbow else 38),
-                outline=(*rank_rgb, 58),
-                width=2,
-            )
-            canvas.alpha_composite(halo)
-            avatar = self._load_icon(icon_id, (visual_size, visual_size))
-            if avatar:
-                canvas.alpha_composite(avatar, (visual_box[0], visual_box[1]))
-            else:
-                error_font = self.font(18)
-                error_text = "等级图加载失败"
-                draw = ImageDraw.Draw(canvas)
-                error_box = draw.textbbox((0, 0), error_text, font=error_font)
-                draw.text(
-                    (
-                        (visual_box[0] + visual_box[2] - (error_box[2] - error_box[0])) // 2,
-                        (visual_box[1] + visual_box[3]) // 2,
-                    ),
-                    error_text,
-                    fill=(220, 70, 70, 255),
-                    font=error_font,
-                )
-
-        draw = ImageDraw.Draw(canvas)
-        draw.text((right_text_x, hero_top + 29), "今日 RP", fill=secondary, font=kicker_font)
-        score_text = str(rp_value)
-        score_box = draw.textbbox((0, 0), score_text, font=score_font)
-        score_y = hero_top + 50
-        if is_static:
-            draw.text(
-                (right_text_x - 3, score_y),
-                score_text,
-                fill=(0, 210, 220, 125),
-                font=score_font,
-            )
-            draw.text(
-                (right_text_x + 3, score_y),
-                score_text,
-                fill=(235, 45, 65, 125),
-                font=score_font,
-            )
-        draw.text((right_text_x, score_y), score_text, fill=score_color, font=score_font)
-
-        badge_text = "信号偏弱" if is_low else rank.name
-        badge_box = draw.textbbox((0, 0), badge_text, font=rank_font)
-        badge_left = min(
-            right_text_x + (score_box[2] - score_box[0]) + 20,
-            hero_right - (badge_box[2] - badge_box[0]) - 50,
-        )
-        badge_top = score_y + 40
-        badge_overlay = PILImage.new("RGBA", canvas.size, (0, 0, 0, 0))
-        badge_draw = ImageDraw.Draw(badge_overlay)
-        badge_draw.rounded_rectangle(
-            (
-                badge_left,
-                badge_top,
-                badge_left + (badge_box[2] - badge_box[0]) + 26,
-                badge_top + 34,
-            ),
-            radius=17,
-            fill=(*rank_rgb, 32 if not is_static else 72),
-            outline=(*rank_rgb, 95),
-            width=1,
-        )
-        badge_draw.text(
-            (badge_left + 13, badge_top + 6),
-            badge_text,
-            fill=(*rank_rgb, 255) if not is_static else primary,
-            font=rank_font,
-        )
-        canvas.alpha_composite(badge_overlay)
-
-        draw = ImageDraw.Draw(canvas)
-        greeting_y = hero_bottom - 47 - max(0, len(greeting_lines) - 1) * (greeting_font.size + 6)
-        line_y = greeting_y
-        for line in greeting_lines:
-            draw.text((right_text_x, line_y), line, fill=primary, font=greeting_font)
-            line_y += greeting_font.size + 6
-
-        section_label = "今日指引"
-        draw.text((panel_margin, section_y), section_label, fill=primary, font=section_font)
-        count_text = f"{len(fields)} 项"
-        count_box = draw.textbbox((0, 0), count_text, font=count_font)
-        count_left = width - panel_margin - (count_box[2] - count_box[0]) - 23
-        count_overlay = PILImage.new("RGBA", canvas.size, (0, 0, 0, 0))
-        count_draw = ImageDraw.Draw(count_overlay)
-        count_draw.rounded_rectangle(
-            (count_left, section_y - 2, width - panel_margin, section_y + 28),
-            radius=15,
-            fill=hero_fill if is_special else (255, 255, 255, 184),
-            outline=hero_outline if is_special else (214, 222, 232, 190),
-            width=1,
-        )
-        count_draw.text(
-            (count_left + 11, section_y + 4),
-            count_text,
             fill=secondary,
-            font=count_font,
+            stroke_width=2 if stroke_fill else 0,
+            stroke_fill=stroke_fill,
         )
-        canvas.alpha_composite(count_overlay)
 
-        themes = {
-            "fortune_text": ((217, 134, 18), (255, 249, 235, 246)),
-            "color": ((124, 83, 215), (249, 246, 255, 246)),
-            "advice_do": ((22, 143, 86), (240, 252, 246, 246)),
-            "advice_dont": ((211, 62, 67), (255, 245, 245, 246)),
-            "taiko_bpm": ((14, 137, 165), (239, 251, 253, 246)),
-            "taiko_stars": ((225, 100, 34), (255, 247, 239, 246)),
-            "taiko_advice": ((45, 101, 214), (242, 247, 255, 246)),
-            "today_events": ((119, 73, 194), (248, 244, 255, 246)),
-        }
-        for spec in card_specs:
-            field = spec["field"]
-            left, top, right, bottom = spec["box"]
-            accent_rgb, tint = themes.get(
-                field,
-                ((100, 116, 139), (248, 250, 252, 246)),
-            )
-            if is_static:
-                card_fill = (3, 6, 9, 224)
-                card_outline = (238, 242, 246, 68)
-                card_shadow = None
-            elif is_rainbow:
-                card_fill = (255, 255, 255, 222)
-                card_outline = (255, 255, 255, 244)
-                card_shadow = None
-            else:
-                card_fill = tint
-                card_outline = (*accent_rgb, 35)
-                card_shadow = (42, 56, 76, 20)
-            self._draw_surface(
-                canvas,
-                (left, top, right, bottom),
-                21,
-                card_fill,
-                card_outline,
-                shadow=card_shadow,
-                accent=(*accent_rgb, 220),
-            )
-            draw = ImageDraw.Draw(canvas)
-            dot_y = top + 18 + label_font.size // 2
-            draw.ellipse(
-                (left + 19, dot_y - 4, left + 27, dot_y + 4),
-                fill=(*accent_rgb, 255),
-            )
-            draw.text(
-                (left + 35, top + 16),
-                labels[field],
-                fill=(*accent_rgb, 255),
-                font=label_font,
-            )
-            value_y = top + 17 + label_height + 8
-            for line in spec["lines"]:
-                draw.text((left + 20, value_y), line, fill=primary, font=value_font)
-                value_y += value_line_height
-
-        footer_y = height - 34
-        if is_special:
-            self._draw_surface(
-                canvas,
-                (panel_margin, footer_y - 8, width - panel_margin, footer_y + 22),
-                15,
-                hero_fill,
-                hero_outline,
-            )
+        self._draw_daily_focus(
+            canvas, icon_id, rp_value, center_y, logo_size, rank_rgb, is_static
+        )
         draw = ImageDraw.Draw(canvas)
-        footer_font = self.font(13, bold=True)
+        score_font = self.font(30, bold=True)
+        logo_top = center_y - logo_size // 2
+        self._center_daily_text(
+            draw, width, f"RP {rp_value}", logo_top - 45, score_font, score_color, stroke_fill
+        )
+        greeting_font, greeting_lines = self._adaptive_daily_font(
+            draw, f"Hi，{user_name}", logo_size + 90, 18, 14, 2
+        )
+        greeting_y = center_y + logo_size // 2 + 12
+        for line in greeting_lines[:2]:
+            self._center_daily_text(
+                draw, width, line, greeting_y, greeting_font, secondary, stroke_fill
+            )
+            greeting_y += greeting_font.size + 5
+
+        for spec in radial_specs:
+            field = spec["field"]
+            self._draw_daily_radial_item(
+                canvas,
+                field,
+                fields[field],
+                labels[field],
+                spec["x"],
+                spec["y"],
+                side_width,
+                spec["side"],
+                spec["font"],
+                spec["lines"],
+                primary,
+                stroke_fill,
+            )
+
+        for spec in bottom_specs:
+            field = spec["field"]
+            self._draw_daily_long_item(
+                canvas,
+                field,
+                fields[field],
+                labels[field],
+                spec["x"],
+                spec["y"],
+                spec["width"],
+                spec["font"],
+                spec["lines"],
+                primary,
+                spec["title_right"],
+                stroke_fill,
+            )
+
+        draw = ImageDraw.Draw(canvas)
+        footer_font = self.font(12, bold=True)
+        footer_y = height - 35
         footer_left = "TAIKO RP · DAILY FORTUNE"
         version_text = f"CONTENT V{int(rp_data.get('content_schema_version', 1))}"
         version_box = draw.textbbox((0, 0), version_text, font=footer_font)
         draw.text(
-            (panel_margin + (12 if is_special else 0), footer_y),
-            footer_left,
-            fill=secondary,
-            font=footer_font,
+            (32, footer_y), footer_left, font=footer_font, fill=secondary,
+            stroke_width=2 if stroke_fill else 0, stroke_fill=stroke_fill,
         )
         draw.text(
-            (
-                width - panel_margin - (version_box[2] - version_box[0]) - (12 if is_special else 0),
-                footer_y,
-            ),
+            (width - 32 - (version_box[2] - version_box[0]), footer_y),
             version_text,
-            fill=secondary,
             font=footer_font,
+            fill=secondary,
+            stroke_width=2 if stroke_fill else 0,
+            stroke_fill=stroke_fill,
         )
         return self._save(canvas, output_path)

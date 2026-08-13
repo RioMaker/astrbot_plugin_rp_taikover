@@ -9,7 +9,7 @@ python local_test/preview.py
 默认生成：
 
 - `rp_000.png`：RP=0 的粗颗粒灰黑雪花屏背景；
-- `rp_025.png`：低分信号仪表，不使用灰色评价 Logo；
+- `rp_025.png`：低分不使用灰色评价 Logo，中心区域留空；
 - `rp_050.png`：普通背景示例；
 - `rp_100.png`：RP=100 的全画布彩虹背景；
 - 每张默认 RP 图都会展示 content2 的 8 个字段，并按内容高度自动增长；

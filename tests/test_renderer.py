@@ -66,6 +66,7 @@ def test_special_backgrounds_and_normal_image_render(tmp_path):
         assert 520 <= image_normal.height <= 900
 
 
+
 def test_low_score_never_loads_gray_rank_icon(tmp_path):
     renderer, _, content = renderer_and_data()
 

@@ -16,7 +16,7 @@ else:  # 兼容 local_test/preview.py 和直接运行测试
 
 
 class RpImageRenderer(BaseRpImageRenderer):
-    """全画布特殊效果与低分信号仪表版渲染器。"""
+    """全画布特殊效果与 D3C 横版布局渲染器。"""
 
     DAILY_FIELD_COLORS = {
         "fortune_text": (221, 143, 24),
@@ -202,101 +202,6 @@ class RpImageRenderer(BaseRpImageRenderer):
             )
         canvas.alpha_composite(overlay)
 
-    def _draw_compact_signal(
-        self,
-        canvas: PILImage.Image,
-        rp_value: int,
-        box: tuple[int, int, int, int],
-        is_static: bool,
-    ) -> None:
-        """低分不显示灰色评价 Logo，改为紧凑的信号仪表。"""
-        left, top, right, bottom = box
-        center_x = (left + right) // 2
-        center_y = (top + bottom) // 2
-        overlay = PILImage.new("RGBA", canvas.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
-
-        if is_static:
-            draw.rounded_rectangle(
-                box,
-                radius=28,
-                fill=(3, 5, 7, 202),
-                outline=(244, 247, 250, 90),
-                width=1,
-            )
-            label_font = self.font(29, bold=True)
-            sub_font = self.font(12, bold=True)
-            label = "NO SIGNAL"
-            label_box = draw.textbbox((0, 0), label, font=label_font)
-            x = center_x - (label_box[2] - label_box[0]) // 2
-            y = center_y - 31
-            draw.text((x - 3, y), label, font=label_font, fill=(0, 210, 220, 195))
-            draw.text((x + 3, y), label, font=label_font, fill=(235, 45, 65, 195))
-            draw.text((x, y), label, font=label_font, fill=(249, 250, 251, 255))
-            sub_text = "RP CHANNEL / LOST"
-            sub_box = draw.textbbox((0, 0), sub_text, font=sub_font)
-            draw.text(
-                (center_x - (sub_box[2] - sub_box[0]) // 2, center_y + 19),
-                sub_text,
-                font=sub_font,
-                fill=(218, 224, 229, 255),
-            )
-            for offset in (-55, 49):
-                draw.rectangle(
-                    (left + 20, center_y + offset, right - 20, center_y + offset + 3),
-                    fill=(235, 239, 242, 125),
-                )
-            for scan_y in range(top + 12, bottom - 10, 8):
-                draw.line((left + 10, scan_y, right - 10, scan_y), fill=(0, 0, 0, 50))
-            canvas.alpha_composite(overlay)
-            return
-
-        draw.rounded_rectangle(
-            box,
-            radius=28,
-            fill=(241, 244, 248, 238),
-            outline=(203, 211, 220, 220),
-            width=1,
-        )
-        score_font = self.font(62, bold=True)
-        score_text = f"{rp_value:02d}"
-        score_box = draw.textbbox((0, 0), score_text, font=score_font)
-        draw.text(
-            (center_x - (score_box[2] - score_box[0]) // 2, top + 15),
-            score_text,
-            fill=(39, 48, 61, 255),
-            font=score_font,
-        )
-        signal_font = self.font(12, bold=True)
-        signal = "LOW RP SIGNAL"
-        signal_box = draw.textbbox((0, 0), signal, font=signal_font)
-        draw.text(
-            (center_x - (signal_box[2] - signal_box[0]) // 2, top + 92),
-            signal,
-            fill=(100, 112, 128, 255),
-            font=signal_font,
-        )
-        bar_count = 6
-        active_count = max(1, math.ceil(rp_value / 50 * bar_count))
-        bar_width = 14
-        gap = 8
-        start_x = center_x - (bar_count * bar_width + (bar_count - 1) * gap) // 2
-        base_y = bottom - 20
-        for index in range(bar_count):
-            bar_height = 8 + index * 5
-            color = (71, 85, 105, 255) if index < active_count else (199, 207, 217, 255)
-            draw.rounded_rectangle(
-                (
-                    start_x + index * (bar_width + gap),
-                    base_y - bar_height,
-                    start_x + index * (bar_width + gap) + bar_width,
-                    base_y,
-                ),
-                radius=4,
-                fill=color,
-            )
-        canvas.alpha_composite(overlay)
-
     @staticmethod
     def _center_daily_text(draw, width: int, text: str, y: int, font, fill, stroke_fill=None) -> None:
         box = draw.textbbox((0, 0), text, font=font)
@@ -338,6 +243,9 @@ class RpImageRenderer(BaseRpImageRenderer):
         accent: tuple[int, int, int],
         dark: bool,
     ) -> None:
+        if rp_value < 50:
+            return
+
         center_x = canvas.width // 2
         halo = PILImage.new("RGBA", canvas.size, (0, 0, 0, 0))
         halo_draw = ImageDraw.Draw(halo)
@@ -360,20 +268,6 @@ class RpImageRenderer(BaseRpImageRenderer):
             fill=(*accent, 25),
         )
         canvas.alpha_composite(halo.filter(ImageFilter.GaussianBlur(20)))
-
-        if rp_value < 50:
-            self._draw_compact_signal(
-                canvas,
-                rp_value,
-                (
-                    center_x - size // 2,
-                    center_y - 74,
-                    center_x + size // 2,
-                    center_y + 74,
-                ),
-                rp_value == 0,
-            )
-            return
 
         icon = self._load_icon(icon_id, (size, size))
         if icon:

@@ -2,12 +2,13 @@
   "schema_version": 1,
   "description": "min_rp/max_rp 为 null 时表示不限制；两者均包含边界值。",
   "fortune_texts": [
-    {"text": "大吉", "min_rp": null, "max_rp": null},
-    {"text": "小吉", "min_rp": null, "max_rp": null},
-    {"text": "吉", "min_rp": null, "max_rp": null},
-    {"text": "末吉", "min_rp": null, "max_rp": null},
-    {"text": "凶", "min_rp": null, "max_rp": null},
-    {"text": "大凶", "min_rp": null, "max_rp": null}
+    {"text": "大吉", "min_rp": 50, "max_rp": 100},
+    {"text": "中吉", "min_rp": 50, "max_rp": 100},
+    {"text": "小吉", "min_rp": 50, "max_rp": 100},
+    {"text": "吉", "min_rp": 50, "max_rp": 100},
+    {"text": "末吉", "min_rp": 50, "max_rp": 100},
+    {"text": "凶", "min_rp": 5, "max_rp": 50},
+    {"text": "大凶", "min_rp": 0, "max_rp": 20}
   ],
   "colors": [
     {"text": "红色", "min_rp": null, "max_rp": null},
@@ -51,9 +52,9 @@
     {"text": "青莲色", "min_rp": null, "max_rp": null},
     {"text": "青缥色", "min_rp": null, "max_rp": null},
     {"text": "青白色", "min_rp": null, "max_rp": null},
-    {"text": "五彩斑斓的黑色", "min_rp": null, "max_rp": null},
-    {"text": "五彩斑斓的白色", "min_rp": null, "max_rp": null},
-    {"text": "五彩斑斓的透明色", "min_rp": null, "max_rp": null}
+    {"text": "五彩斑斓的黑色", "min_rp": 50, "max_rp": 100},
+    {"text": "五彩斑斓的白色", "min_rp": 50, "max_rp": 100},
+    {"text": "五彩斑斓的透明色", "min_rp": 90, "max_rp": 100}
   ],
   "advice_do": [
     {"text": "出门逛街", "min_rp": null, "max_rp": null},

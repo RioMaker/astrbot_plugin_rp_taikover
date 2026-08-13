@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from PIL import Image as PILImage
-from PIL import ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
+from PIL import ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
 if __package__:
     from .rp_core import RankCatalog, RankDefinition
@@ -147,6 +147,28 @@ class RpImageRenderer:
             lines.append(current)
         return lines or [""]
 
+    def _wrap_daily_description(
+        self,
+        draw: ImageDraw.ImageDraw,
+        user_name: str,
+        fortune_text: str,
+        lucky_color: str,
+        font: ImageFont.FreeTypeFont,
+        width: int,
+    ) -> str:
+        """将每日信息分段并限制行宽，避免幸运色等长文本越出画布。"""
+        sections = (
+            f"Hi~ “{user_name}”",
+            f"今日签：{fortune_text}",
+            f"幸运色：{lucky_color}",
+        )
+        lines = [
+            line
+            for section in sections
+            for line in self._wrap_text(draw, section, font, width)
+        ]
+        return "\n".join(lines)
+
     def _load_icon(self, image_id: str, size: tuple[int, int]) -> PILImage.Image | None:
         path = self.find_image_file(image_id)
         if not path:
@@ -192,9 +214,16 @@ class RpImageRenderer:
         desc_font = self.font(self.desc_font_size)
         analysis_font = self.font(self.analysis_font_size)
         rp_name = f"【今日 RP 值：{rp_value}】"
-        description = f"Hi~ “{user_name}”\n今日签：{rp_data['fortune_text']}　幸运色：{rp_data['color']}"
-        analysis = f"宜：{rp_data['advice_do']}\n忌：{rp_data['advice_dont']}"
         max_text_width = int(self.canvas_width * self.analysis_width_ratio)
+        description = self._wrap_daily_description(
+            draw,
+            user_name,
+            str(rp_data["fortune_text"]),
+            str(rp_data["color"]),
+            desc_font,
+            max_text_width,
+        )
+        analysis = f"宜：{rp_data['advice_do']}\n忌：{rp_data['advice_dont']}"
         analysis_lines = self._wrap_text(draw, analysis, analysis_font, max_text_width)
         line_height = max(int(self.analysis_font_size * self.analysis_line_height_factor), self.analysis_font_size + 6)
 
@@ -239,6 +268,196 @@ class RpImageRenderer:
             draw.text(((self.canvas_width - (bbox[2] - bbox[0])) // 2, analysis_y), line, fill=primary, font=analysis_font)
             analysis_y += line_height
 
+        return self._save(canvas, output_path)
+
+    def _prepare_leaderboard_avatar(
+        self,
+        source: Any,
+        user_name: str,
+        size: int,
+    ) -> PILImage.Image:
+        avatar: PILImage.Image | None = None
+        try:
+            if isinstance(source, PILImage.Image):
+                avatar = source.convert("RGBA")
+            elif source:
+                with PILImage.open(Path(source)) as image:
+                    avatar = image.convert("RGBA")
+            if avatar is not None:
+                avatar = ImageOps.fit(
+                    avatar,
+                    (size, size),
+                    method=PILImage.Resampling.LANCZOS,
+                )
+        except (OSError, TypeError, ValueError):
+            avatar = None
+
+        if avatar is None:
+            hue = sum(ord(char) for char in user_name) % 360 / 360
+            red, green, blue = colorsys.hsv_to_rgb(hue, 0.45, 0.82)
+            avatar = PILImage.new(
+                "RGBA",
+                (size, size),
+                (int(red * 255), int(green * 255), int(blue * 255), 255),
+            )
+            placeholder_draw = ImageDraw.Draw(avatar)
+            initial = (user_name.strip() or "?")[0].upper()
+            initial_font = self.font(max(20, size // 2), bold=True)
+            initial_box = placeholder_draw.textbbox((0, 0), initial, font=initial_font)
+            placeholder_draw.text(
+                (
+                    (size - (initial_box[2] - initial_box[0])) // 2,
+                    (size - (initial_box[3] - initial_box[1])) // 2 - initial_box[1],
+                ),
+                initial,
+                fill=(255, 255, 255, 245),
+                font=initial_font,
+            )
+
+        mask_scale = 4
+        mask = PILImage.new("L", (size * mask_scale, size * mask_scale), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, size * mask_scale - 1, size * mask_scale - 1), fill=255)
+        mask = mask.resize((size, size), PILImage.Resampling.LANCZOS)
+        avatar.putalpha(ImageChops.multiply(avatar.getchannel("A"), mask))
+        return avatar
+
+    @staticmethod
+    def _truncate_text(
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        font: ImageFont.FreeTypeFont,
+        max_width: int,
+    ) -> str:
+        text = str(text)
+        if draw.textbbox((0, 0), text, font=font)[2] <= max_width:
+            return text
+        suffix = "…"
+        shortened = text
+        while shortened:
+            shortened = shortened[:-1]
+            candidate = shortened + suffix
+            if draw.textbbox((0, 0), candidate, font=font)[2] <= max_width:
+                return candidate
+        return suffix
+
+    def render_leaderboard_image(
+        self,
+        group_name: str,
+        entries: Sequence[Mapping[str, Any]],
+        output_path: str | Path | None = None,
+    ) -> Path:
+        """生成按成员数量自动增长的群 RP 排行榜长图。"""
+        width = 960
+        header_height = 176
+        row_height = 112
+        footer_height = 60
+        height = header_height + len(entries) * row_height + footer_height
+        canvas = PILImage.new("RGBA", (width, height), "#F2F5FA")
+        draw = ImageDraw.Draw(canvas)
+
+        draw.rectangle((0, 0, width, 150), fill="#111827")
+        draw.ellipse((width - 230, -125, width + 55, 160), fill="#1D4ED8")
+        draw.ellipse((width - 125, -50, width + 95, 170), fill="#7C3AED")
+        title_font = self.font(44, bold=True)
+        subtitle_font = self.font(20)
+        draw.text((44, 35), "群 RP 排行榜", fill="#FFFFFF", font=title_font)
+        subtitle = f"{group_name} · {datetime.now().strftime('%Y.%m.%d')} · {len(entries)} 人上榜"
+        subtitle = self._truncate_text(draw, subtitle, subtitle_font, 790)
+        draw.text((47, 96), subtitle, fill="#CBD5E1", font=subtitle_font)
+
+        name_font = self.font(27, bold=True)
+        detail_font = self.font(17)
+        position_font = self.font(25, bold=True)
+        score_font = self.font(38, bold=True)
+        score_label_font = self.font(15, bold=True)
+        crown_ids = ("hongguan", "jinguan", "yinguan")
+        position_colors = ("#F97316", "#EAB308", "#94A3B8")
+        top_card_colors = ("#FFF7ED", "#FFFBEB", "#F8FAFC")
+
+        for index, entry in enumerate(entries):
+            position = index + 1
+            row_start = header_height + index * row_height
+            card_top = row_start + 8
+            card_bottom = card_top + 96
+            card_fill = top_card_colors[index] if index < 3 else "#FFFFFF"
+            draw.rounded_rectangle(
+                (32, card_top, width - 32, card_bottom),
+                radius=22,
+                fill=card_fill,
+                outline="#E5EAF1",
+                width=1,
+            )
+
+            badge_color = position_colors[index] if index < 3 else "#E8EDF4"
+            badge_text_color = "#FFFFFF" if index < 3 else "#526071"
+            badge_box = (50, card_top + 29, 92, card_top + 71)
+            draw.ellipse(badge_box, fill=badge_color)
+            position_text = str(position)
+            position_box = draw.textbbox((0, 0), position_text, font=position_font)
+            draw.text(
+                (
+                    (badge_box[0] + badge_box[2] - (position_box[2] - position_box[0])) // 2,
+                    (badge_box[1] + badge_box[3] - (position_box[3] - position_box[1])) // 2
+                    - position_box[1],
+                ),
+                position_text,
+                fill=badge_text_color,
+                font=position_font,
+            )
+
+            avatar_size = 68
+            avatar_x = 116
+            avatar_y = card_top + 14
+            ring_color = position_colors[index] if index < 3 else "#D6DEE9"
+            draw.ellipse(
+                (avatar_x - 3, avatar_y - 3, avatar_x + avatar_size + 3, avatar_y + avatar_size + 3),
+                fill=ring_color,
+            )
+            avatar = self._prepare_leaderboard_avatar(
+                entry.get("avatar_path") or entry.get("avatar"),
+                str(entry.get("user_name") or entry.get("user_id") or "?"),
+                avatar_size,
+            )
+            canvas.alpha_composite(avatar, (avatar_x, avatar_y))
+
+            if index < 3:
+                crown = self._load_icon(crown_ids[index], (52, 52))
+                if crown:
+                    # 王冠中心沿头像左上方 45° 方向外移，并保留部分重叠。
+                    crown_x = avatar_x - crown.width // 2
+                    crown_y = avatar_y - crown.height // 2
+                    canvas.alpha_composite(crown, (crown_x, crown_y))
+
+            user_name = str(entry.get("user_name") or entry.get("user_id") or "未知用户")
+            user_name = self._truncate_text(draw, user_name, name_font, 470)
+            text_x = 212
+            draw.text((text_x, card_top + 20), user_name, fill="#172033", font=name_font)
+            score = int(entry.get("luck_value", 0))
+            rank = self.rank_catalog.for_score(score)
+            detail = f"UID {entry.get('user_id', '')} · {rank.name}"
+            detail = self._truncate_text(draw, detail, detail_font, 500)
+            draw.text((text_x, card_top + 59), detail, fill="#7B8798", font=detail_font)
+
+            score_text = str(score)
+            score_box = draw.textbbox((0, 0), score_text, font=score_font)
+            score_right = width - 62
+            score_x = score_right - (score_box[2] - score_box[0])
+            draw.text((score_x, card_top + 17), score_text, fill=rank.color, font=score_font)
+            label_box = draw.textbbox((0, 0), "RP", font=score_label_font)
+            draw.text(
+                (score_right - (label_box[2] - label_box[0]), card_top + 65),
+                "RP",
+                fill="#9AA5B4",
+                font=score_label_font,
+            )
+
+        footer_y = height - footer_height
+        draw.text(
+            (44, footer_y + 19),
+            f"今日已抽取 RP 的群成员 · 当前显示 {len(entries)} 人",
+            fill="#7C8797",
+            font=detail_font,
+        )
         return self._save(canvas, output_path)
 
     def render_statistics_image(

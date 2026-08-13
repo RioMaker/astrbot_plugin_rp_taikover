@@ -218,12 +218,16 @@ class RpImageRenderer(BaseRpImageRenderer):
         desc_font = self.font(self.desc_font_size)
         analysis_font = self.font(self.analysis_font_size)
         rp_name = f"【今日 RP 值：{rp_value}】"
-        description = (
-            f"Hi~ “{user_name}”\n"
-            f"今日签：{rp_data['fortune_text']}　幸运色：{rp_data['color']}"
+        max_text_width = int(self.canvas_width * self.analysis_width_ratio)
+        description = self._wrap_daily_description(
+            draw,
+            user_name,
+            str(rp_data["fortune_text"]),
+            str(rp_data["color"]),
+            desc_font,
+            max_text_width,
         )
         analysis = f"宜：{rp_data['advice_do']}\n忌：{rp_data['advice_dont']}"
-        max_text_width = int(self.canvas_width * self.analysis_width_ratio)
         analysis_lines = self._wrap_text(draw, analysis, analysis_font, max_text_width)
         line_height = max(
             int(self.analysis_font_size * self.analysis_line_height_factor),

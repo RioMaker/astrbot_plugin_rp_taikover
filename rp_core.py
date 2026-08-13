@@ -234,8 +234,27 @@ class LuckDatabase:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS group_rp_members (
+                    group_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    user_name TEXT NOT NULL,
+                    avatar_url TEXT NOT NULL DEFAULT '',
+                    last_rp_date TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (group_id, user_id)
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_luck_records_user_date
                 ON luck_records (user_id, date, id)
+                """
+            )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_group_rp_members_date
+                ON group_rp_members (group_id, last_rp_date)
                 """
             )
 
@@ -344,6 +363,88 @@ class LuckDatabase:
         for score in self.get_all_scores(user_id):
             counts[rank_catalog.for_score(score).id] += 1
         return counts
+
+    def track_group_member(
+        self,
+        group_id: str,
+        user_id: str,
+        user_name: str,
+        avatar_url: str = "",
+        date_string: str | None = None,
+    ) -> None:
+        """记录用户在哪个群抽取了当天 RP，供群排行榜使用。"""
+        date_string = date_string or self.today_string()
+        updated_at = datetime.now(CHINA_TZ).isoformat(timespec="seconds")
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO group_rp_members
+                    (group_id, user_id, user_name, avatar_url, last_rp_date, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(group_id, user_id) DO UPDATE SET
+                    user_name = excluded.user_name,
+                    avatar_url = CASE
+                        WHEN excluded.avatar_url <> '' THEN excluded.avatar_url
+                        ELSE group_rp_members.avatar_url
+                    END,
+                    last_rp_date = excluded.last_rp_date,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(group_id),
+                    str(user_id),
+                    str(user_name).strip() or str(user_id),
+                    str(avatar_url).strip(),
+                    date_string,
+                    updated_at,
+                ),
+            )
+
+    def get_group_leaderboard(
+        self,
+        group_id: str,
+        limit: int = 50,
+        date_string: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """返回当天在指定群抽取过 RP 的成员，按分数从高到低排列。"""
+        limit = max(1, min(200, int(limit)))
+        date_string = date_string or self.today_string()
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    members.user_id,
+                    members.user_name,
+                    members.avatar_url,
+                    records.luck_value,
+                    records.date
+                FROM group_rp_members AS members
+                JOIN luck_records AS records
+                    ON records.id = (
+                        SELECT candidate.id
+                        FROM luck_records AS candidate
+                        WHERE candidate.user_id = members.user_id
+                          AND candidate.date = ?
+                        ORDER BY candidate.id ASC
+                        LIMIT 1
+                    )
+                WHERE members.group_id = ?
+                  AND members.last_rp_date = ?
+                ORDER BY records.luck_value DESC, records.id ASC, members.user_id ASC
+                LIMIT ?
+                """,
+                (date_string, str(group_id), date_string, limit),
+            ).fetchall()
+        return [
+            {
+                "user_id": str(row["user_id"]),
+                "user_name": str(row["user_name"]),
+                "avatar_url": str(row["avatar_url"] or ""),
+                "luck_value": int(row["luck_value"]),
+                "date": str(row["date"]),
+            }
+            for row in rows
+        ]
 
     def insert_record_for_test(
         self,

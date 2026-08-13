@@ -1,11 +1,12 @@
 # astrbot_plugin_taiko_rp
 
-为 AstrBot 提供每日 Taiko RP 运势、历史波动统计和可维护内容库。
+为 AstrBot 提供每日 Taiko RP 运势、历史波动统计、群排行榜和可维护内容库。
 
 ## 命令
 
 - `/rp`：生成或查看当天 RP。同一用户同一天始终返回同一条数据库记录；
 - `/rp 统计`：绘制最近 30 条 RP 折线图，并统计该用户全部历史记录中各等级的数量；
+- `/rp 排行榜 [人数]`：绘制本群今日 RP 排行榜，默认 50 人、最多 200 人；
 - `/rp help`：显示帮助；
 - `/rp_test 0~100`：管理员本地指定分数预览，不修改真实记录；
 - `/rp_init`：管理员重新初始化数据库并重载内容库。插件启动时也会自动初始化。
@@ -22,10 +23,10 @@ Windows 双击 `local_test/run_preview.bat`，或在项目根目录运行：
 python local_test/preview.py
 ```
 
-图片输出到 `local_test/output/`。默认生成 RP=0、25、50、100 和一张统计图；也可以指定任意测试值：
+图片输出到 `local_test/output/`。默认生成 RP=0、25、50、100、统计图和 50 人排行榜长图；也可以指定任意测试值与排行榜人数：
 
 ```powershell
-python local_test/preview.py --score 0 25 88 100 --user-name 小咚
+python local_test/preview.py --score 0 25 88 100 --user-name 小咚 --leaderboard-count 100
 ```
 
 ## 宜忌、今日签与幸运色内容库
@@ -64,4 +65,4 @@ pip install -r requirements.txt
 python -m pytest -q
 ```
 
-测试覆盖数据库每日复用、近 30 条查询、等级总数、RP 范围筛选、表格校验、0/100 特殊背景、低分无 Logo 和统计图输出。
+测试覆盖数据库每日复用、群排行榜筛选与排序、近 30 条查询、等级总数、RP 范围筛选、表格校验、0/100 特殊背景、低分无 Logo、统计图和排行榜长图输出。

@@ -2,7 +2,7 @@ import random
 from datetime import date, timedelta
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from rp_core import ContentStore, RankCatalog, count_scores_by_rank
 from rp_renderer_effects import RpImageRenderer
@@ -53,6 +53,73 @@ def test_low_score_never_loads_gray_rank_icon(tmp_path):
     output = renderer.render_rp_image(record, tmp_path / "rp_25.png")
     with Image.open(output) as image:
         assert image.size == (800, 800)
+
+
+def test_long_lucky_color_wraps_within_canvas(tmp_path):
+    renderer, ranks, content = renderer_and_data()
+    long_color = "雨后群青与极光紫交织的渐变色" * 3
+    record = content.make_fortune(50, random.Random(50))
+    record.update(
+        {
+            "user_name": "测试用户",
+            "rp_id": ranks.result_icon_for_score(50, random.Random(50)),
+            "color": long_color,
+        }
+    )
+
+    canvas = Image.new("RGB", (renderer.canvas_width, renderer.canvas_height))
+    draw = ImageDraw.Draw(canvas)
+    font = renderer.font(renderer.desc_font_size)
+    max_width = int(renderer.canvas_width * renderer.analysis_width_ratio)
+    description = renderer._wrap_daily_description(
+        draw,
+        record["user_name"],
+        record["fortune_text"],
+        record["color"],
+        font,
+        max_width,
+    )
+
+    assert description.replace("\n", "") == (
+        f"Hi~ “{record['user_name']}”"
+        f"今日签：{record['fortune_text']}"
+        f"幸运色：{long_color}"
+    )
+    assert all(
+        draw.textbbox((0, 0), line, font=font)[2] <= max_width
+        for line in description.splitlines()
+    )
+    assert len(description.splitlines()) > 3
+
+    output = renderer.render_rp_image(record, tmp_path / "rp_long_color.png")
+    with Image.open(output) as image:
+        assert image.size == (800, 800)
+
+
+def test_leaderboard_renders_long_image_with_crowns_and_round_avatars(tmp_path):
+    renderer, _, _ = renderer_and_data()
+    entries = []
+    for index, score in enumerate((100, 97, 92, 88, 75), start=1):
+        avatar = Image.new("RGBA", (96, 96), (30 * index, 80, 160, 255))
+        entries.append(
+            {
+                "user_id": f"1000{index}",
+                "user_name": f"测试成员 {index}",
+                "luck_value": score,
+                "avatar": avatar,
+            }
+        )
+
+    for crown_id in ("hongguan", "jinguan", "yinguan"):
+        assert renderer.find_image_file(crown_id) is not None
+    output = renderer.render_leaderboard_image(
+        "本地测试群",
+        entries,
+        tmp_path / "leaderboard.png",
+    )
+    with Image.open(output) as image:
+        assert image.size == (960, 176 + len(entries) * 112 + 60)
+        assert image.height > image.width / 2
 
 
 def test_statistics_image_contains_all_cards(tmp_path):

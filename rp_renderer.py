@@ -33,16 +33,16 @@ class RpImageRenderer:
         self.rank_catalog = rank_catalog
         config = config or {}
         self.canvas_width = int(config.get("CANVAS_WIDTH", 800))
-        self.canvas_height = int(config.get("CANVAS_HEIGHT", 800))
-        self.avatar_size = int(config.get("AVATAR_SIZE", 280))
+        self.canvas_height = int(config.get("CANVAS_HEIGHT", 1000))
+        self.avatar_size = int(config.get("AVATAR_SIZE", 220))
         self.spacing_avatar_name = int(config.get("SPACING_AVATAR_NAME", 20))
         self.spacing_name_desc = int(config.get("SPACING_NAME_DESC", 25))
         self.spacing_desc_analysis = int(config.get("SPACING_DESC_ANALYSIS", 30))
-        self.desc_font_size = int(config.get("DESC_FONT_SIZE", 32))
-        self.analysis_font_size = int(config.get("ANALYSIS_FONT_SIZE", 28))
+        self.desc_font_size = int(config.get("DESC_FONT_SIZE", 27))
+        self.analysis_font_size = int(config.get("ANALYSIS_FONT_SIZE", 24))
         self.analysis_line_height_factor = float(config.get("ANALYSIS_LINE_HEIGHT_FACTOR", 1.6))
         self.analysis_width_ratio = float(config.get("ANALYSIS_WIDTH_RATIO", 0.85))
-        self.name_font_size = int(config.get("NAME_FONT_SIZE", 66))
+        self.name_font_size = int(config.get("NAME_FONT_SIZE", 56))
 
     @lru_cache(maxsize=32)
     def font(self, size: int, bold: bool = False) -> ImageFont.FreeTypeFont:

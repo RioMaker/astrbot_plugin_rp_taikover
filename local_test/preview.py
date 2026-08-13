@@ -21,7 +21,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from rp_core import ContentStore, RankCatalog, count_scores_by_rank  # noqa: E402
+from rp_core import (  # noqa: E402
+    ContentStore,
+    RankCatalog,
+    count_scores_by_rank,
+    select_content_path,
+)
 from rp_renderer_effects import RpImageRenderer  # noqa: E402
 
 
@@ -117,7 +122,7 @@ def main() -> int:
 
     resource_dir = PROJECT_ROOT / "resource"
     rank_catalog = RankCatalog.from_file(resource_dir / "ranks.json")
-    content_store = ContentStore.from_file(resource_dir / "content.json")
+    content_store = ContentStore.from_file(select_content_path(resource_dir))
     renderer = RpImageRenderer(resource_dir, rank_catalog)
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)

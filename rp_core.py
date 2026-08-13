@@ -10,7 +10,51 @@ from typing import Any, Iterable, Sequence
 
 
 CHINA_TZ = timezone(timedelta(hours=8))
-CONTENT_KEYS = ("fortune_texts", "colors", "advice_do", "advice_dont")
+BASE_CONTENT_KEYS = ("fortune_texts", "colors", "advice_do", "advice_dont")
+CONTENT_KEYS = BASE_CONTENT_KEYS
+CONTENT2_KEYS = (
+    *BASE_CONTENT_KEYS,
+    "taiko_bpm",
+    "taiko_stars",
+    "taiko_advice",
+    "today_events",
+)
+CONTENT_FIELD_ALIASES = {
+    "fortune_texts": "fortune_text",
+    "colors": "color",
+}
+DEFAULT_CONTENT_LABELS = {
+    "fortune_texts": "今日签",
+    "colors": "幸运色",
+    "advice_do": "宜",
+    "advice_dont": "忌",
+    "taiko_bpm": "推荐 BPM",
+    "taiko_stars": "推荐星级",
+    "taiko_advice": "太鼓建议",
+    "today_events": "今日事件",
+}
+SNAPSHOT_FORMAT_VERSION = 1
+
+
+def content_field_name(category: str) -> str:
+    return CONTENT_FIELD_ALIASES.get(category, category)
+
+
+def select_content_path(resource_dir: str | Path) -> Path:
+    """选择 schema_version 最高的内容库，当前 content2 会优先于旧版 content。"""
+    resource_dir = Path(resource_dir)
+    candidates = [
+        path for path in (resource_dir / "content.json", resource_dir / "content2.json")
+        if path.exists()
+    ]
+    if not candidates:
+        raise FileNotFoundError(f"未找到内容库：{resource_dir}")
+    scored: list[tuple[int, int, Path]] = []
+    for path in candidates:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        version = int(raw.get("schema_version", 1))
+        scored.append((version, 1 if path.name == "content2.json" else 0, path))
+    return max(scored)[2]
 
 
 @dataclass(frozen=True)
@@ -110,27 +154,62 @@ class ContentItem:
 
 
 class ContentStore:
-    """可按 RP 范围筛选的今日签、幸运色和宜忌内容库。"""
+    """可按 RP 范围筛选、字段可扩展且带版本号的内容库。"""
 
-    def __init__(self, data: dict[str, Sequence[ContentItem]], source_path: Path | None = None):
+    def __init__(
+        self,
+        data: dict[str, Sequence[ContentItem]],
+        source_path: Path | None = None,
+        schema_version: int = 1,
+        category_labels: dict[str, str] | None = None,
+    ):
+        if isinstance(schema_version, bool) or int(schema_version) < 1:
+            raise ValueError("内容库 schema_version 必须是正整数")
+        self.schema_version = int(schema_version)
         self.source_path = source_path
-        self.data = {key: tuple(data.get(key, ())) for key in CONTENT_KEYS}
-        missing = [key for key, values in self.data.items() if not values]
-        if missing:
-            raise ValueError(f"内容库分类不能为空：{', '.join(missing)}")
+        self.data = {str(key): tuple(values) for key, values in data.items()}
+        missing = [key for key in BASE_CONTENT_KEYS if not self.data.get(key)]
+        empty = [key for key in BASE_CONTENT_KEYS if not self.data.get(key)]
+        if missing or empty:
+            invalid = tuple(dict.fromkeys((*missing, *empty)))
+            raise ValueError(f"内容库分类不能为空：{', '.join(invalid)}")
+        self.data = {key: values for key, values in self.data.items() if values}
+        self.keys = tuple(self.data)
+
+        raw_labels = category_labels or {}
+        self.category_labels = {
+            key: str(raw_labels.get(key) or DEFAULT_CONTENT_LABELS.get(key) or key)
+            for key in self.keys
+        }
+        self.field_keys = tuple(content_field_name(key) for key in self.keys)
+        if len(set(self.field_keys)) != len(self.field_keys):
+            raise ValueError("内容库字段别名发生冲突")
+        self.field_labels = {
+            content_field_name(key): self.category_labels[key] for key in self.keys
+        }
 
     @classmethod
     def from_file(cls, path: str | Path) -> "ContentStore":
         path = Path(path)
         raw = json.loads(path.read_text(encoding="utf-8"))
         parsed: dict[str, list[ContentItem]] = {}
-        for key in CONTENT_KEYS:
-            values = raw.get(key, [])
-            parsed[key] = [parse_content_item(value, key, index) for index, value in enumerate(values, 1)]
-        return cls(parsed, path)
+        for key, values in raw.items():
+            if not isinstance(values, list):
+                continue
+            parsed[key] = [
+                parse_content_item(value, key, index)
+                for index, value in enumerate(values, 1)
+            ]
+        labels = raw.get("categories") if isinstance(raw.get("categories"), dict) else {}
+        return cls(
+            parsed,
+            path,
+            schema_version=raw.get("schema_version", 1),
+            category_labels={str(key): str(value) for key, value in labels.items()},
+        )
 
     def eligible(self, category: str, rp_value: int) -> tuple[ContentItem, ...]:
-        if category not in CONTENT_KEYS:
+        if category not in self.data:
             raise KeyError(f"未知内容类型：{category}")
         rp_value = clamp_rp(rp_value)
         return tuple(item for item in self.data[category] if item.matches(rp_value))
@@ -147,12 +226,17 @@ class ContentStore:
 
     def make_fortune(self, rp_value: int, rng: random.Random | None = None) -> dict[str, Any]:
         rp_value = clamp_rp(rp_value)
+        chooser = rng or random
+        fields = {
+            content_field_name(category): self.choose(category, rp_value, chooser).text
+            for category in self.keys
+        }
         return {
             "luck_value": rp_value,
-            "fortune_text": self.choose("fortune_texts", rp_value, rng).text,
-            "color": self.choose("colors", rp_value, rng).text,
-            "advice_do": self.choose("advice_do", rp_value, rng).text,
-            "advice_dont": self.choose("advice_dont", rp_value, rng).text,
+            "content_schema_version": self.schema_version,
+            "content_fields": fields,
+            "content_labels": dict(self.field_labels),
+            **fields,
         }
 
 
@@ -194,17 +278,95 @@ def clamp_rp(value: int) -> int:
 
 
 class LuckDatabase:
-    """每日 RP 记录仓库，兼容旧版 luck_records 表结构。"""
+    """每日 RP 仓库：兼容旧列，并以带版本的 JSON 快照承载可变字段。"""
+
+    RECORD_COLUMNS = """
+        id, date, luck_value, fortune_text, color, advice_do, advice_dont,
+        content_schema_version, content_json
+    """
 
     def __init__(self, path: str | Path, content_store: ContentStore):
         self.path = Path(path)
         self.content_store = content_store
+        self._schema_labels_cache: dict[int, dict[str, str]] = {}
 
     def connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.path, timeout=15)
         connection.row_factory = sqlite3.Row
         return connection
+
+    def _schema_definition_json(self) -> str:
+        payload = {
+            "format_version": SNAPSHOT_FORMAT_VERSION,
+            "field_labels": dict(self.content_store.field_labels),
+        }
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+    @staticmethod
+    def _decode_schema_labels(raw_definition: str) -> dict[str, str]:
+        try:
+            payload = json.loads(raw_definition)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        raw_labels = payload.get("field_labels", {})
+        if not isinstance(raw_labels, dict):
+            return {}
+        return {
+            str(key): str(value)
+            for key, value in raw_labels.items()
+            if value is not None
+        }
+
+    def _register_content_schema(self, connection: sqlite3.Connection) -> None:
+        version = int(self.content_store.schema_version)
+        definition_json = self._schema_definition_json()
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO content_schemas
+                (schema_version, definition_json, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (
+                version,
+                definition_json,
+                datetime.now(CHINA_TZ).isoformat(timespec="seconds"),
+            ),
+        )
+        row = connection.execute(
+            "SELECT definition_json FROM content_schemas WHERE schema_version = ?",
+            (version,),
+        ).fetchone()
+        stored_labels = self._decode_schema_labels(str(row["definition_json"] or ""))
+        expected_labels = dict(self.content_store.field_labels)
+        if stored_labels != expected_labels:
+            raise ValueError(
+                f"内容库 schema_version={version} 已对应其他字段结构，"
+                "字段发生变化时必须递增 schema_version"
+            )
+        self._schema_labels_cache[version] = stored_labels
+
+    def register_content_schema(self) -> None:
+        with self.connect() as connection:
+            self._register_content_schema(connection)
+
+    def _schema_labels_for_version(self, version: int) -> dict[str, str]:
+        version = int(version)
+        if version in self._schema_labels_cache:
+            return self._schema_labels_cache[version]
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT definition_json FROM content_schemas WHERE schema_version = ?",
+                (version,),
+            ).fetchone()
+        labels = (
+            self._decode_schema_labels(str(row["definition_json"] or ""))
+            if row else {}
+        )
+        self._schema_labels_cache[version] = labels
+        return labels
 
     def init(self) -> None:
         with self.connect() as connection:
@@ -218,10 +380,26 @@ class LuckDatabase:
                     fortune_text TEXT NOT NULL,
                     color TEXT NOT NULL,
                     advice_do TEXT NOT NULL,
-                    advice_dont TEXT NOT NULL
+                    advice_dont TEXT NOT NULL,
+                    content_schema_version INTEGER NOT NULL DEFAULT 1,
+                    content_json TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(luck_records)").fetchall()
+            }
+            if "content_schema_version" not in columns:
+                connection.execute(
+                    "ALTER TABLE luck_records "
+                    "ADD COLUMN content_schema_version INTEGER NOT NULL DEFAULT 1"
+                )
+            if "content_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE luck_records "
+                    "ADD COLUMN content_json TEXT NOT NULL DEFAULT ''"
+                )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS luck_steals (
@@ -247,6 +425,15 @@ class LuckDatabase:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS content_schemas (
+                    schema_version INTEGER PRIMARY KEY,
+                    definition_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_luck_records_user_date
                 ON luck_records (user_id, date, id)
                 """
@@ -257,22 +444,98 @@ class LuckDatabase:
                 ON group_rp_members (group_id, last_rp_date)
                 """
             )
+            self._register_content_schema(connection)
 
     @staticmethod
     def today_string() -> str:
         return datetime.now(CHINA_TZ).strftime("%Y-%m-%d")
 
-    @staticmethod
-    def _row_to_record(row: sqlite3.Row) -> dict[str, Any]:
-        return {
-            "id": row["id"],
-            "date": row["date"],
-            "luck_value": row["luck_value"],
-            "fortune_text": row["fortune_text"],
-            "color": row["color"],
-            "advice_do": row["advice_do"],
-            "advice_dont": row["advice_dont"],
+    def _row_to_record(self, row: sqlite3.Row) -> dict[str, Any]:
+        legacy_fields = {
+            "fortune_text": str(row["fortune_text"] or ""),
+            "color": str(row["color"] or ""),
+            "advice_do": str(row["advice_do"] or ""),
+            "advice_dont": str(row["advice_dont"] or ""),
         }
+        fields: dict[str, str] = {}
+        raw_snapshot = str(row["content_json"] or "")
+        if raw_snapshot:
+            try:
+                payload = json.loads(raw_snapshot)
+                raw_fields = payload.get("fields", payload) if isinstance(payload, dict) else {}
+                if isinstance(raw_fields, dict):
+                    fields = {
+                        str(key): str(value)
+                        for key, value in raw_fields.items()
+                        if value is not None
+                    }
+            except (TypeError, ValueError, json.JSONDecodeError):
+                fields = {}
+        for key, value in legacy_fields.items():
+            if value and key not in fields:
+                fields[key] = value
+        schema_version = int(row["content_schema_version"] or 1)
+        stored_labels = self._schema_labels_for_version(schema_version)
+        labels = {
+            key: stored_labels.get(
+                key,
+                self.content_store.field_labels.get(key, key.replace("_", " ")),
+            )
+            for key in fields
+        }
+        return {
+            "id": int(row["id"]),
+            "date": str(row["date"]),
+            "luck_value": int(row["luck_value"]),
+            "content_schema_version": schema_version,
+            "content_fields": fields,
+            "content_labels": labels,
+            **legacy_fields,
+            **fields,
+        }
+
+    def _snapshot_json(self, record: dict[str, Any]) -> str:
+        raw_fields = record.get("content_fields")
+        if not isinstance(raw_fields, dict):
+            raw_fields = {
+                key: record[key]
+                for key in self.content_store.field_keys
+                if key in record
+            }
+        fields = {
+            str(key): str(value)
+            for key, value in raw_fields.items()
+            if value is not None
+        }
+        payload = {"format_version": SNAPSHOT_FORMAT_VERSION, "fields": fields}
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+    def _insert_record(
+        self,
+        connection: sqlite3.Connection,
+        user_id: str,
+        date_string: str,
+        record: dict[str, Any],
+    ) -> int:
+        cursor = connection.execute(
+            """
+            INSERT INTO luck_records
+                (
+                    user_id, date, luck_value,
+                    fortune_text, color, advice_do, advice_dont,
+                    content_schema_version, content_json
+                )
+            VALUES (?, ?, ?, '', '', '', '', ?, ?)
+            """,
+            (
+                str(user_id),
+                date_string,
+                int(record["luck_value"]),
+                int(record.get("content_schema_version", self.content_store.schema_version)),
+                self._snapshot_json(record),
+            ),
+        )
+        return int(cursor.lastrowid)
 
     def get_today_record(self, user_id: str) -> dict[str, Any] | None:
         return self.get_record(user_id, self.today_string())
@@ -280,8 +543,8 @@ class LuckDatabase:
     def get_record(self, user_id: str, date_string: str) -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute(
-                """
-                SELECT id, date, luck_value, fortune_text, color, advice_do, advice_dont
+                f"""
+                SELECT {self.RECORD_COLUMNS}
                 FROM luck_records
                 WHERE user_id = ? AND date = ?
                 ORDER BY id ASC
@@ -291,7 +554,9 @@ class LuckDatabase:
             ).fetchone()
         return self._row_to_record(row) if row else None
 
-    def build_record(self, rp_value: int | None = None, rng: random.Random | None = None) -> dict[str, Any]:
+    def build_record(
+        self, rp_value: int | None = None, rng: random.Random | None = None
+    ) -> dict[str, Any]:
         chooser = rng or random
         value = chooser.randint(0, 100) if rp_value is None else clamp_rp(rp_value)
         return self.content_store.make_fortune(value, chooser)
@@ -304,8 +569,8 @@ class LuckDatabase:
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                """
-                SELECT id, date, luck_value, fortune_text, color, advice_do, advice_dont
+                f"""
+                SELECT {self.RECORD_COLUMNS}
                 FROM luck_records
                 WHERE user_id = ? AND date = ?
                 ORDER BY id ASC
@@ -316,31 +581,16 @@ class LuckDatabase:
             if row:
                 return self._row_to_record(row)
             record = self.build_record(rng=rng)
-            cursor = connection.execute(
-                """
-                INSERT INTO luck_records
-                    (user_id, date, luck_value, fortune_text, color, advice_do, advice_dont)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    str(user_id),
-                    date_string,
-                    record["luck_value"],
-                    record["fortune_text"],
-                    record["color"],
-                    record["advice_do"],
-                    record["advice_dont"],
-                ),
-            )
-            record.update({"id": cursor.lastrowid, "date": date_string})
+            record_id = self._insert_record(connection, str(user_id), date_string, record)
+            record.update({"id": record_id, "date": date_string})
             return record
 
     def get_recent_records(self, user_id: str, limit: int = 30) -> list[dict[str, Any]]:
         limit = max(1, min(365, int(limit)))
         with self.connect() as connection:
             rows = connection.execute(
-                """
-                SELECT id, date, luck_value, fortune_text, color, advice_do, advice_dont
+                f"""
+                SELECT {self.RECORD_COLUMNS}
                 FROM luck_records
                 WHERE user_id = ?
                 ORDER BY date DESC, id DESC
@@ -372,7 +622,6 @@ class LuckDatabase:
         avatar_url: str = "",
         date_string: str | None = None,
     ) -> None:
-        """记录用户在哪个群抽取了当天 RP，供群排行榜使用。"""
         date_string = date_string or self.today_string()
         updated_at = datetime.now(CHINA_TZ).isoformat(timespec="seconds")
         with self.connect() as connection:
@@ -406,7 +655,6 @@ class LuckDatabase:
         limit: int = 50,
         date_string: str | None = None,
     ) -> list[dict[str, Any]]:
-        """返回当天在指定群抽取过 RP 的成员，按分数从高到低排列。"""
         limit = max(1, min(200, int(limit)))
         date_string = date_string or self.today_string()
         with self.connect() as connection:
@@ -446,6 +694,108 @@ class LuckDatabase:
             for row in rows
         ]
 
+    def storage_stats(self) -> dict[str, Any]:
+        with self.connect() as connection:
+            summary = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS record_count,
+                    MIN(date) AS oldest_date,
+                    MAX(date) AS newest_date,
+                    SUM(CASE WHEN content_json <> '' THEN 1 ELSE 0 END) AS snapshot_count,
+                    COALESCE(SUM(length(CAST(content_json AS BLOB))), 0) AS snapshot_bytes,
+                    COALESCE(SUM(
+                        length(CAST(fortune_text AS BLOB)) +
+                        length(CAST(color AS BLOB)) +
+                        length(CAST(advice_do AS BLOB)) +
+                        length(CAST(advice_dont AS BLOB))
+                    ), 0) AS legacy_content_bytes
+                FROM luck_records
+                """
+            ).fetchone()
+            group_member_count = int(
+                connection.execute("SELECT COUNT(*) FROM group_rp_members").fetchone()[0]
+            )
+            schema_versions = {
+                int(row["content_schema_version"]): int(row["amount"])
+                for row in connection.execute(
+                    """
+                    SELECT content_schema_version, COUNT(*) AS amount
+                    FROM luck_records
+                    GROUP BY content_schema_version
+                    ORDER BY content_schema_version
+                    """
+                ).fetchall()
+            }
+            schema_summary = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS definition_count,
+                    COALESCE(SUM(length(CAST(definition_json AS BLOB))), 0)
+                        AS definition_bytes
+                FROM content_schemas
+                """
+            ).fetchone()
+            page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+            free_pages = int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+
+        file_paths = [
+            self.path,
+            Path(f"{self.path}-wal"),
+            Path(f"{self.path}-shm"),
+            Path(f"{self.path}-journal"),
+        ]
+        database_files_bytes = sum(
+            path.stat().st_size for path in file_paths if path.exists() and path.is_file()
+        )
+        record_count = int(summary["record_count"] or 0)
+        snapshot_count = int(summary["snapshot_count"] or 0)
+        snapshot_bytes = int(summary["snapshot_bytes"] or 0)
+        return {
+            "database_files_bytes": database_files_bytes,
+            "reclaimable_bytes": free_pages * page_size,
+            "record_count": record_count,
+            "group_member_count": group_member_count,
+            "oldest_date": summary["oldest_date"],
+            "newest_date": summary["newest_date"],
+            "snapshot_count": snapshot_count,
+            "snapshot_bytes": snapshot_bytes,
+            "average_snapshot_bytes": snapshot_bytes / snapshot_count if snapshot_count else 0,
+            "legacy_content_bytes": int(summary["legacy_content_bytes"] or 0),
+            "schema_versions": schema_versions,
+            "schema_definition_count": int(schema_summary["definition_count"] or 0),
+            "schema_definition_bytes": int(schema_summary["definition_bytes"] or 0),
+        }
+
+    def purge_older_than(self, days: int) -> dict[str, Any]:
+        days = int(days)
+        if not 0 <= days <= 36500:
+            raise ValueError("保留天数必须位于 0~36500")
+        cutoff_date = (datetime.now(CHINA_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
+        before_bytes = int(self.storage_stats()["database_files_bytes"])
+        with self.connect() as connection:
+            records_deleted = connection.execute(
+                "DELETE FROM luck_records WHERE date < ?", (cutoff_date,)
+            ).rowcount
+            steals_deleted = connection.execute(
+                "DELETE FROM luck_steals WHERE date < ?", (cutoff_date,)
+            ).rowcount
+            members_deleted = connection.execute(
+                "DELETE FROM group_rp_members WHERE last_rp_date < ?", (cutoff_date,)
+            ).rowcount
+        with self.connect() as connection:
+            connection.execute("VACUUM")
+        after_bytes = int(self.storage_stats()["database_files_bytes"])
+        return {
+            "cutoff_date": cutoff_date,
+            "records_deleted": max(0, int(records_deleted)),
+            "steals_deleted": max(0, int(steals_deleted)),
+            "members_deleted": max(0, int(members_deleted)),
+            "before_bytes": before_bytes,
+            "after_bytes": after_bytes,
+            "reclaimed_bytes": max(0, before_bytes - after_bytes),
+        }
+
     def insert_record_for_test(
         self,
         user_id: str,
@@ -453,26 +803,10 @@ class LuckDatabase:
         rp_value: int,
         rng: random.Random | None = None,
     ) -> dict[str, Any]:
-        """供自动化测试造历史数据；插件命令不会调用。"""
         record = self.build_record(rp_value, rng)
         with self.connect() as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO luck_records
-                    (user_id, date, luck_value, fortune_text, color, advice_do, advice_dont)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    str(user_id),
-                    date_string,
-                    record["luck_value"],
-                    record["fortune_text"],
-                    record["color"],
-                    record["advice_do"],
-                    record["advice_dont"],
-                ),
-            )
-        record.update({"id": cursor.lastrowid, "date": date_string})
+            record_id = self._insert_record(connection, str(user_id), date_string, record)
+        record.update({"id": record_id, "date": date_string})
         return record
 
 

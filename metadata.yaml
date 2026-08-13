@@ -1,7 +1,7 @@
 name: astrbot_plugin_taiko_rp
 display_name: taiko_今日人品
 desc: 太鼓达人のRP插件
-help: 使用 /rp 获取今日 RP，/rp 统计查看历史波动，/rp 排行榜查看群排行
-version: 0.5.0
+help: 使用 /rp 获取今日 RP；/rp 统计、/rp 排行榜；管理员可用 /rp 存储 与 /rp 清理
+version: 0.6.0
 author: Rio
 repo: https://github.com/RioMaker/astrbot_plugin_rp_taikover.git

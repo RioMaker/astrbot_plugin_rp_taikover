@@ -7,6 +7,8 @@
 - `/rp`：生成或查看当天 RP。同一用户同一天始终返回同一条数据库记录；
 - `/rp 统计`：绘制最近 30 条 RP 折线图，并统计该用户全部历史记录中各等级的数量；
 - `/rp 排行榜 [人数]`：绘制本群今日 RP 排行榜，默认 50 人、最多 200 人；
+- `/rp 存储`：管理员查看数据库、内容快照与头像缓存的实际占用；
+- `/rp 清理 <天数>`：管理员删除指定天数以前的数据并压缩数据库；
 - `/rp help`：显示帮助；
 - `/rp_test 0~100`：管理员本地指定分数预览，不修改真实记录；
 - `/rp_init`：管理员重新初始化数据库并重载内容库。插件启动时也会自动初始化。
@@ -31,7 +33,7 @@ python local_test/preview.py --score 0 25 88 100 --user-name 小咚 --leaderboar
 
 ## 宜忌、今日签与幸运色内容库
 
-运行时内容位于 `resource/content.json`。每一项均支持：
+运行时会选择 `resource/content.json` 与 `resource/content2.json` 中 `schema_version` 最高的版本；当前默认使用 `content2.json`。每一项均支持：
 
 ```json
 {
@@ -42,7 +44,7 @@ python local_test/preview.py --score 0 25 88 100 --user-name 小咚 --leaderboar
 }
 ```
 
-`min_rp` 或 `max_rp` 为 `null` 时代表该方向不限制；上下限均包含边界值。
+`min_rp` 或 `max_rp` 为 `null` 时代表该方向不限制；上下限均包含边界值。当前 v2 还包含推荐 BPM、推荐星级、太鼓建议和今日事件。每日抽中的全部字段以“结构版本 + 紧凑 JSON 快照”保存；字段名称等结构信息按版本只保存一次，因此后续增删字段不会改变历史结果，也不会在每条记录中重复占用空间。
 
 完整 Excel 模板位于 `outputs/content_template/content_template.xlsx`。编辑后先校验：
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from rp_core import ContentStore, RankCatalog, count_scores_by_rank
+from rp_core import ContentStore, RankCatalog, count_scores_by_rank, select_content_path
 from rp_renderer_effects import RpImageRenderer
 
 
@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def renderer_and_data():
     resource = ROOT / "resource"
     ranks = RankCatalog.from_file(resource / "ranks.json")
-    content = ContentStore.from_file(resource / "content.json")
+    content = ContentStore.from_file(select_content_path(resource))
     return RpImageRenderer(resource, ranks), ranks, content
 
 
@@ -29,16 +29,40 @@ def test_special_backgrounds_and_normal_image_render(tmp_path):
         paths[score] = renderer.render_rp_image(record, tmp_path / f"rp_{score}.png")
 
     with Image.open(paths[0]).convert("RGB") as image_zero:
-        assert image_zero.size == (800, 800)
+        assert image_zero.width == 800
+        assert image_zero.height >= 1000
         samples = [image_zero.getpixel((x, 20)) for x in range(20, 780, 40)]
         assert all(max(red, green, blue) - min(red, green, blue) <= 12 for red, green, blue in samples)
         assert len(set(samples)) > 10
+        edge_samples = [
+            image_zero.getpixel((x, y))
+            for y in range(20, image_zero.height, 80)
+            for x in (5, image_zero.width - 6)
+        ]
+        assert all(
+            max(red, green, blue) - min(red, green, blue) <= 12
+            for red, green, blue in edge_samples
+        )
+        assert len(set(edge_samples)) > 15
     with Image.open(paths[100]).convert("RGB") as image_hundred:
         samples = [image_hundred.getpixel((x, 20)) for x in range(20, 780, 40)]
         assert len(set(samples)) > 10
         assert any(max(pixel) - min(pixel) > 35 for pixel in samples)
+        horizontal_bands = [
+            [
+                image_hundred.getpixel((x, y))
+                for x in range(5, image_hundred.width, 80)
+            ]
+            for y in range(20, image_hundred.height, 80)
+        ]
+        assert all(len(set(band)) > 6 for band in horizontal_bands)
+        assert all(
+            any(max(pixel) - min(pixel) > 35 for pixel in band)
+            for band in horizontal_bands
+        )
     with Image.open(paths[50]) as image_normal:
-        assert image_normal.size == (800, 800)
+        assert image_normal.width == 800
+        assert image_normal.height >= 1000
 
 
 def test_low_score_never_loads_gray_rank_icon(tmp_path):
@@ -52,7 +76,8 @@ def test_low_score_never_loads_gray_rank_icon(tmp_path):
     record.update({"user_name": "低分测试", "rp_id": "none-ji"})
     output = renderer.render_rp_image(record, tmp_path / "rp_25.png")
     with Image.open(output) as image:
-        assert image.size == (800, 800)
+        assert image.width == 800
+        assert image.height >= 1000
 
 
 def test_long_lucky_color_wraps_within_canvas(tmp_path):
@@ -93,7 +118,8 @@ def test_long_lucky_color_wraps_within_canvas(tmp_path):
 
     output = renderer.render_rp_image(record, tmp_path / "rp_long_color.png")
     with Image.open(output) as image:
-        assert image.size == (800, 800)
+        assert image.width == 800
+        assert image.height >= 1000
 
 
 def test_leaderboard_renders_long_image_with_crowns_and_round_avatars(tmp_path):

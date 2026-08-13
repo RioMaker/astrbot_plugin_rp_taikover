@@ -3,19 +3,19 @@
         "description": "画布宽度",
         "hint": "",
         "type": "int",
-        "default": 600
+        "default": 800
     },
     "CANVAS_HEIGHT": {
-        "description": "画布高度",
-        "hint": "",
+        "description": "画布最小高度",
+        "hint": "内容较多时会自动增长，避免字段越界",
         "type": "int",
-        "default": 600
+        "default": 1000
     },
     "AVATAR_SIZE": {
-        "description": "头像大小",
-        "hint": "",
+        "description": "等级图标大小",
+        "hint": "新布局建议 180~240",
         "type": "int",
-        "default": 180
+        "default": 220
     },
     "STATIC_BLOCK_SIZE": {
         "description": "RP=0 雪花颗粒大小",
@@ -51,13 +51,13 @@
         "description": "描述字体大小",
         "hint": "",
         "type": "int",
-        "default": 38
+        "default": 27
     },
     "ANALYSIS_FONT_SIZE": {
         "description": "解析字体大小",
         "hint": "",
         "type": "int",
-        "default": 28
+        "default": 24
     },
     "ANALYSIS_LINE_HEIGHT_FACTOR": {
         "description": "解析行高因子",

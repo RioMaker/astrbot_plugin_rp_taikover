@@ -12,6 +12,7 @@ python local_test/preview.py
 - `rp_025.png`：低分信号仪表，不使用灰色评价 Logo；
 - `rp_050.png`：普通背景示例；
 - `rp_100.png`：RP=100 的全画布彩虹背景；
+- 每张默认 RP 图都会展示 content2 的 8 个字段，并按内容高度自动增长；
 - `rp_statistics.png`：30 次折线与所有等级的累计数量卡片；
 - `rp_leaderboard_50.png`：50 人群 RP 排行榜长图，包含圆形模拟头像和前三王冠。
 

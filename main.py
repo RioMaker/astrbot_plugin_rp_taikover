@@ -13,10 +13,10 @@ from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core import AstrBotConfig
 
 if __package__:
-    from .rp_core import ContentStore, LuckDatabase, RankCatalog
+    from .rp_core import ContentStore, LuckDatabase, RankCatalog, select_content_path
     from .rp_renderer_effects import RpImageRenderer
 else:  # 兼容直接运行源码进行本地调试
-    from rp_core import ContentStore, LuckDatabase, RankCatalog
+    from rp_core import ContentStore, LuckDatabase, RankCatalog, select_content_path
     from rp_renderer_effects import RpImageRenderer
 
 
@@ -39,7 +39,7 @@ INTRO_INFO = [
 ]
 
 
-@register("taiko_rp", "Rio", "测一下 taiko 人品", "0.5.0")
+@register("taiko_rp", "Rio", "测一下 taiko 人品", "0.6.0")
 class taikoRP(Star):
     """每日 RP、历史统计与可扩展宜忌内容库。"""
 
@@ -55,7 +55,8 @@ class taikoRP(Star):
         self.plugin_data_dir.mkdir(parents=True, exist_ok=True)
 
         self.rank_catalog = RankCatalog.from_file(self.resource_dir / "ranks.json")
-        self.content_store = ContentStore.from_file(self.resource_dir / "content.json")
+        self.content_path = select_content_path(self.resource_dir)
+        self.content_store = ContentStore.from_file(self.content_path)
         # 保持旧版数据库位置不变，升级后可直接读取既有历史记录。
         self.database = LuckDatabase(DB_PATH, self.content_store)
         self.database.init()
@@ -131,7 +132,7 @@ class taikoRP(Star):
                 return cache_path
             request = urllib.request.Request(
                 avatar_url,
-                headers={"User-Agent": "AstrBot taiko_rp leaderboard/0.5"},
+                headers={"User-Agent": "AstrBot taiko_rp leaderboard/0.6"},
             )
             with urllib.request.urlopen(request, timeout=8) as response:
                 content = response.read(5 * 1024 * 1024 + 1)
@@ -166,6 +167,112 @@ class taikoRP(Star):
 
         return list(await asyncio.gather(*(prepare(record) for record in records)))
 
+    def _is_plugin_admin(self, event: AstrMessageEvent) -> bool:
+        return str(event.get_sender_id()) in self.admins_id
+
+    @staticmethod
+    def _format_bytes(size: float | int) -> str:
+        value = float(size)
+        units = ("B", "KiB", "MiB", "GiB", "TiB")
+        for unit in units:
+            if value < 1024 or unit == units[-1]:
+                return f"{value:.0f} {unit}" if unit == "B" else f"{value:.2f} {unit}"
+            value /= 1024
+        return f"{value:.2f} TiB"
+
+    def _avatar_cache_stats(self) -> dict[str, int]:
+        cache_dir = self.plugin_data_dir / "avatar_cache"
+        files = [path for path in cache_dir.rglob("*") if path.is_file()] if cache_dir.exists() else []
+        return {
+            "file_count": len(files),
+            "bytes": sum(path.stat().st_size for path in files),
+        }
+
+    def _purge_avatar_cache(self, days: int) -> dict[str, int]:
+        cache_dir = self.plugin_data_dir / "avatar_cache"
+        if not cache_dir.exists():
+            return {"files_deleted": 0, "bytes_deleted": 0}
+        cutoff_timestamp = time.time() - int(days) * 24 * 60 * 60
+        files_deleted = 0
+        bytes_deleted = 0
+        resolved_cache = cache_dir.resolve()
+        for path in cache_dir.rglob("*"):
+            if not path.is_file() or path.stat().st_mtime >= cutoff_timestamp:
+                continue
+            try:
+                path.resolve().relative_to(resolved_cache)
+            except ValueError:
+                continue
+            size = path.stat().st_size
+            path.unlink(missing_ok=True)
+            files_deleted += 1
+            bytes_deleted += size
+        return {"files_deleted": files_deleted, "bytes_deleted": bytes_deleted}
+
+    async def rp_storage(self, event: AstrMessageEvent):
+        if not self._is_plugin_admin(event):
+            await event.send(event.plain_result("无权限，请联系管理员。"))
+            return
+        stats, avatar_stats = await asyncio.gather(
+            asyncio.to_thread(self.database.storage_stats),
+            asyncio.to_thread(self._avatar_cache_stats),
+        )
+        versions = "、".join(
+            f"v{version}: {amount} 条"
+            for version, amount in stats["schema_versions"].items()
+        ) or "无记录"
+        total_bytes = stats["database_files_bytes"] + avatar_stats["bytes"]
+        text = (
+            "【RP 存储占用】\n"
+            f"数据库文件：{self._format_bytes(stats['database_files_bytes'])}\n"
+            f"可回收空页：{self._format_bytes(stats['reclaimable_bytes'])}\n"
+            f"每日记录：{stats['record_count']} 条"
+            f"（{stats['oldest_date'] or '无'} ～ {stats['newest_date'] or '无'}）\n"
+            f"内容快照：{stats['snapshot_count']} 条 / "
+            f"{self._format_bytes(stats['snapshot_bytes'])} / "
+            f"平均 {self._format_bytes(stats['average_snapshot_bytes'])} 每条\n"
+            f"旧版固定字段：{self._format_bytes(stats['legacy_content_bytes'])}\n"
+            f"内容版本：{versions}\n"
+            f"字段结构：{stats['schema_definition_count']} 个 / "
+            f"{self._format_bytes(stats['schema_definition_bytes'])}\n"
+            f"群成员索引：{stats['group_member_count']} 条\n"
+            f"头像缓存：{avatar_stats['file_count']} 个 / "
+            f"{self._format_bytes(avatar_stats['bytes'])}\n"
+            f"合计占用：{self._format_bytes(total_bytes)}\n"
+            "清理示例：/rp 清理 30（删除 30 天以前的数据）"
+        )
+        await event.send(event.plain_result(text))
+
+    async def rp_cleanup(self, event: AstrMessageEvent, days_text: str):
+        if not self._is_plugin_admin(event):
+            await event.send(event.plain_result("无权限，请联系管理员。"))
+            return
+        try:
+            days = int(days_text.strip())
+        except ValueError:
+            await event.send(event.plain_result("用法：/rp 清理 <保留天数>，例如 /rp 清理 30"))
+            return
+        if not 0 <= days <= 36500:
+            await event.send(event.plain_result("保留天数必须位于 0~36500。"))
+            return
+        database_result, avatar_result = await asyncio.gather(
+            asyncio.to_thread(self.database.purge_older_than, days),
+            asyncio.to_thread(self._purge_avatar_cache, days),
+        )
+        total_reclaimed = database_result["reclaimed_bytes"] + avatar_result["bytes_deleted"]
+        text = (
+            "【RP 过期数据清理完成】\n"
+            f"清理边界：早于 {database_result['cutoff_date']}\n"
+            f"每日记录：{database_result['records_deleted']} 条\n"
+            f"群成员索引：{database_result['members_deleted']} 条\n"
+            f"旧操作记录：{database_result['steals_deleted']} 条\n"
+            f"头像缓存：{avatar_result['files_deleted']} 个\n"
+            f"实际释放：{self._format_bytes(total_reclaimed)}\n"
+            f"数据库：{self._format_bytes(database_result['before_bytes'])} → "
+            f"{self._format_bytes(database_result['after_bytes'])}"
+        )
+        await event.send(event.plain_result(text))
+
     @filter.permission_type(PermissionType.ADMIN)
     @filter.command("rp_init")
     async def rp_init(self, event: AstrMessageEvent):
@@ -177,8 +284,17 @@ class taikoRP(Star):
         try:
             self.database.init()
             # 重新加载内容库，便于管理员替换 JSON 后手动刷新。
-            self.content_store = ContentStore.from_file(self.resource_dir / "content.json")
-            self.database.content_store = self.content_store
+            content_path = select_content_path(self.resource_dir)
+            content_store = ContentStore.from_file(content_path)
+            previous_store = self.database.content_store
+            self.database.content_store = content_store
+            try:
+                self.database.register_content_schema()
+            except Exception:
+                self.database.content_store = previous_store
+                raise
+            self.content_path = content_path
+            self.content_store = content_store
             await event.send(event.plain_result("数据库与内容库初始化成功！"))
         except Exception as exc:
             logger.exception("taiko_rp 初始化失败")
@@ -190,6 +306,8 @@ class taikoRP(Star):
             "/rp　　　　　　　　查看/生成今天的运势\n"
             "/rp 统计　　　　　 查看近 30 次波动与全部等级统计\n"
             "/rp 排行榜 [人数]　 查看本群今日排行，默认 50，最多 200\n"
+            "/rp 存储　　　　　 管理员查看数据库与缓存占用\n"
+            "/rp 清理 <天数>　　 管理员删除指定天数以前的数据\n"
             "/rp help　　　　　 查看本帮助"
         )
         await event.send(event.plain_result(help_text))
@@ -266,6 +384,12 @@ class taikoRP(Star):
             return
         if normalized_action in {"排行榜", "排行", "rank", "ranking"}:
             await self.rp_leaderboard(event, argument)
+            return
+        if normalized_action in {"存储", "空间", "storage"}:
+            await self.rp_storage(event)
+            return
+        if normalized_action in {"清理", "cleanup", "purge"}:
+            await self.rp_cleanup(event, argument)
             return
         if normalized_action in {"help", "帮助"}:
             await self.help(event)
@@ -352,14 +476,23 @@ class taikoRP(Star):
     async def send_fallback_msg(self, event: AstrMessageEvent, rp_data: dict):
         """图片生成失败时发送等级图标和纯文本。"""
         rank = self.rank_catalog.for_score(rp_data["luck_value"])
+        fields = rp_data.get("content_fields")
+        if not isinstance(fields, dict):
+            fields = {
+                key: rp_data[key]
+                for key in ("fortune_text", "color", "advice_do", "advice_dont")
+                if rp_data.get(key)
+            }
+        labels = rp_data.get("content_labels") if isinstance(rp_data.get("content_labels"), dict) else {}
+        content_lines = [
+            f"{labels.get(key, key)}：{value}" for key, value in fields.items()
+        ]
         text_msg = (
             "【今日运势】\n"
             f"《{rank.name}》\n"
             f"Hi~ “{event.get_sender_name()}”\n"
             f"今日人品（RP）值：{rp_data['luck_value']}\n"
-            f"今日签：{rp_data['fortune_text']}\n"
-            f"幸运色：{rp_data['color']}\n"
-            f"宜：{rp_data['advice_do']}；忌：{rp_data['advice_dont']}"
+            + "\n".join(content_lines)
         )
         message_chain = []
         image_path = None

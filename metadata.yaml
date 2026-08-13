@@ -2,6 +2,6 @@ name: astrbot_plugin_taiko_rp
 display_name: taiko_rp
 desc: 每日 Taiko RP 运势、近 30 次波动图、等级统计和可维护宜忌内容库
 help: 使用 /rp 获取今日 RP，使用 /rp 统计查看历史波动
-version: v0.4.0
+version: 0.4.0
 author: Rio
 repo: https://github.com/RioMaker/astrbot_plugin_rp_taikover.git

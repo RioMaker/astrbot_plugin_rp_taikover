@@ -12,7 +12,10 @@ from typing import Any, Mapping, Sequence
 from PIL import Image as PILImage
 from PIL import ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
-from rp_core import RankCatalog, RankDefinition
+if __package__:
+    from .rp_core import RankCatalog, RankDefinition
+else:  # 兼容 local_test/preview.py 和直接运行测试
+    from rp_core import RankCatalog, RankDefinition
 
 
 class RpImageRenderer:

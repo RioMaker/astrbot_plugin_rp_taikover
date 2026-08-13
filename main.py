@@ -9,8 +9,12 @@ from astrbot.api.event.filter import PermissionType
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core import AstrBotConfig
 
-from rp_core import ContentStore, LuckDatabase, RankCatalog
-from rp_renderer_effects import RpImageRenderer
+if __package__:
+    from .rp_core import ContentStore, LuckDatabase, RankCatalog
+    from .rp_renderer_effects import RpImageRenderer
+else:  # 兼容直接运行源码进行本地调试
+    from rp_core import ContentStore, LuckDatabase, RankCatalog
+    from rp_renderer_effects import RpImageRenderer
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -32,7 +36,7 @@ INTRO_INFO = [
 ]
 
 
-@register("taiko_rp", "Rio", "测一下 taiko 人品", "0.4.0")
+@register("taiko_rp", "Rio", "测一下 taiko 人品", "0.4.1")
 class taikoRP(Star):
     """每日 RP、历史统计与可扩展宜忌内容库。"""
 

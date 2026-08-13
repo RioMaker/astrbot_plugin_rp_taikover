@@ -9,7 +9,10 @@ from typing import Any, Mapping
 from PIL import Image as PILImage
 from PIL import ImageDraw, ImageEnhance, ImageOps
 
-from rp_renderer import RpImageRenderer as BaseRpImageRenderer
+if __package__:
+    from .rp_renderer import RpImageRenderer as BaseRpImageRenderer
+else:  # 兼容 local_test/preview.py 和直接运行测试
+    from rp_renderer import RpImageRenderer as BaseRpImageRenderer
 
 
 class RpImageRenderer(BaseRpImageRenderer):

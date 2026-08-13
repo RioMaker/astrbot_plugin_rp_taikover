@@ -1,0 +1,10 @@
+[
+  {"id": "ji", "min": 100, "max": 100, "name": "极", "icon": "ji", "result_icons": ["ji"], "color": "#E5484D"},
+  {"id": "ziya", "min": 95, "max": 99, "name": "紫雅", "icon": "ziya", "result_icons": ["ziya"], "color": "#8B5CF6"},
+  {"id": "fenya", "min": 90, "max": 94, "name": "粉雅", "icon": "fenya", "result_icons": ["fenya"], "color": "#EC4899"},
+  {"id": "jinya", "min": 80, "max": 89, "name": "金雅", "icon": "jinya", "result_icons": ["jinya"], "color": "#D99A13"},
+  {"id": "yincui", "min": 70, "max": 79, "name": "银粋", "icon": "yincui", "result_icons": ["yincui"], "color": "#7B8794"},
+  {"id": "tongcui", "min": 60, "max": 69, "name": "铜粋", "icon": "tongcui", "result_icons": ["tongcui"], "color": "#B16E3B"},
+  {"id": "baicui", "min": 50, "max": 59, "name": "白粋", "icon": "baicui", "result_icons": ["baicui"], "color": "#60A5FA"},
+  {"id": "unrated", "min": 0, "max": 49, "name": "未评级", "icon": "none", "result_icons": ["none-ji", "none-ji-shine", "none-baicui", "none-fenya"], "color": "#64748B"}
+]

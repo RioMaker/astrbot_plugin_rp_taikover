@@ -17,6 +17,18 @@
         "type": "int",
         "default": 180
     },
+    "STATIC_BLOCK_SIZE": {
+        "description": "RP=0 雪花颗粒大小",
+        "hint": "建议 8~20；数值越大，灰黑雪花颗粒越粗",
+        "type": "int",
+        "default": 12
+    },
+    "STATIC_GLITCH_BANDS": {
+        "description": "RP=0 横向故障带数量",
+        "hint": "建议 15~35；数值越大，画面撕裂效果越密集",
+        "type": "int",
+        "default": 24
+    },
     "SPACING_AVATAR_NAME": {
         "description": "头像与名称间距",
         "hint": "",

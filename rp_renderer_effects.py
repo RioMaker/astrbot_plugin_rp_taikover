@@ -7,12 +7,14 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from PIL import Image as PILImage
-from PIL import ImageDraw, ImageEnhance, ImageFilter, ImageOps
+from PIL import ImageColor, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 
 if __package__:
     from .rp_renderer import RpImageRenderer as BaseRpImageRenderer
+    from .renderer_style import background_style_for_score, load_renderer_style
 else:  # 兼容 local_test/preview.py 和直接运行测试
     from rp_renderer import RpImageRenderer as BaseRpImageRenderer
+    from renderer_style import background_style_for_score, load_renderer_style
 
 
 class RpImageRenderer(BaseRpImageRenderer):
@@ -32,12 +34,17 @@ class RpImageRenderer(BaseRpImageRenderer):
     def __init__(self, resource_dir, rank_catalog, config=None):
         super().__init__(resource_dir, rank_catalog, config)
         config = config or {}
+        self.renderer_style = load_renderer_style(resource_dir, config)
+        typography = self.renderer_style["typography"]
+        self.rp_value_font_size = int(typography["rp_value_font_size"])
+        self.user_greeting_font_size = int(typography["user_greeting_font_size"])
         # 可在 AstrBot 插件配置中修改：值越大，RP=0 的雪花颗粒越粗。
         self.static_block_size = max(4, min(40, int(config.get("STATIC_BLOCK_SIZE", 12))))
         # 横向撕裂/故障块数量。
         self.static_glitch_bands = max(5, min(60, int(config.get("STATIC_GLITCH_BANDS", 24))))
 
     def _static_background(self, size: tuple[int, int], seed: int = 0) -> PILImage.Image:
+        """生成带 RGB 错位、横向撕裂和扫描线的故障屏。"""
         width, height = size
         rng = random.Random(seed)
         noise_width = math.ceil(width / self.static_block_size)
@@ -48,8 +55,19 @@ class RpImageRenderer(BaseRpImageRenderer):
         coarse_noise = ImageEnhance.Contrast(coarse_noise).enhance(2.35)
         coarse_noise = coarse_noise.resize(size, PILImage.Resampling.NEAREST)
         background = ImageOps.colorize(
-            coarse_noise, black="#050607", white="#B8BDC2"
+            coarse_noise, black="#030405", white="#899098"
         ).convert("RGBA")
+
+        # 模拟信号不同步：随机切出横条并左右错位。
+        displaced = background.copy()
+        for _ in range(max(8, self.static_glitch_bands // 2)):
+            y = rng.randrange(height)
+            band_height = rng.randrange(4, 24)
+            shift = rng.randrange(-70, 71)
+            band = background.crop((0, y, width, min(height, y + band_height)))
+            displaced.alpha_composite(band, (shift, y))
+        background = displaced
+
 
         effects = PILImage.new("RGBA", size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(effects)
@@ -59,13 +77,20 @@ class RpImageRenderer(BaseRpImageRenderer):
             band_height = rng.randrange(5, 20)
             x = rng.randrange(-width // 5, width // 3)
             segment_width = rng.randrange(width // 3, width + width // 3)
-            shade = rng.choice((8, 30, 215, 245))
+            shade = rng.choice((8, 24, 195, 235))
             alpha = rng.randrange(75, 175)
             draw.rectangle(
                 (x, y, x + segment_width, y + band_height),
                 fill=(shade, shade, shade, alpha),
             )
         for y in range(0, height, 6):
+            if rng.random() < 0.55:
+                chroma = rng.choice(((255, 24, 72, 75), (0, 225, 255, 72)))
+                offset = rng.choice((-12, -8, 8, 12))
+                draw.rectangle(
+                    (x + offset, y, x + segment_width + offset, y + max(2, band_height // 3)),
+                    fill=chroma,
+                )
             draw.line((0, y, width, y), fill=(0, 0, 0, 72), width=2)
         for _ in range(7):
             y = rng.randrange(height)
@@ -169,6 +194,72 @@ class RpImageRenderer(BaseRpImageRenderer):
         return PILImage.alpha_composite(background, glow)
 
     @staticmethod
+    def _rgba(
+        value: Any, alpha: int = 255, fallback: str = "#000000"
+    ) -> tuple[int, int, int, int]:
+        try:
+            red, green, blue = ImageColor.getrgb(str(value or fallback))[:3]
+        except (TypeError, ValueError):
+            red, green, blue = ImageColor.getrgb(fallback)[:3]
+        return red, green, blue, max(0, min(255, int(alpha)))
+
+    def _configured_background(
+        self,
+        size: tuple[int, int],
+        rp_value: int,
+        style: Mapping[str, Any],
+    ) -> PILImage.Image:
+        image_path = str(style.get("image") or "").strip()
+        canvas: PILImage.Image | None = None
+        if image_path:
+            try:
+                with PILImage.open(image_path) as source:
+                    source = source.convert("RGBA")
+                    if str(style.get("image_fit") or "cover").lower() == "contain":
+                        contained = ImageOps.contain(source, size, PILImage.Resampling.LANCZOS)
+                        canvas = PILImage.new("RGBA", size, (8, 10, 14, 255))
+                        canvas.alpha_composite(
+                            contained,
+                            ((size[0] - contained.width) // 2, (size[1] - contained.height) // 2),
+                        )
+                    else:
+                        canvas = ImageOps.fit(source, size, PILImage.Resampling.LANCZOS)
+            except (OSError, TypeError, ValueError):
+                canvas = None
+
+        if canvas is None:
+            mode = str(style.get("mode") or "soft_gradient").lower()
+            if mode == "rainbow":
+                canvas = self._rainbow_background(size)
+            elif mode in {"glitch", "static", "fault"}:
+                canvas = self._static_background(size, seed=20260813 + rp_value)
+            else:
+                canvas = self._soft_background(size)
+
+        overlay_opacity = max(0, min(255, int(style.get("overlay_opacity", 0) or 0)))
+        if overlay_opacity:
+            overlay = PILImage.new(
+                "RGBA",
+                size,
+                self._rgba(style.get("overlay_color"), overlay_opacity),
+            )
+            canvas = PILImage.alpha_composite(canvas.convert("RGBA"), overlay)
+        return canvas.convert("RGBA")
+
+    def _surface_colors(
+        self, style: Mapping[str, Any]
+    ) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]]:
+        raw = style.get("surface") if isinstance(style.get("surface"), Mapping) else {}
+        return (
+            self._rgba(raw.get("fill"), int(raw.get("opacity", 0) or 0), "#FFFFFF"),
+            self._rgba(
+                raw.get("outline"),
+                int(raw.get("outline_opacity", 0) or 0),
+                "#FFFFFF",
+            ),
+        )
+
+    @staticmethod
     def _draw_surface(
         canvas: PILImage.Image,
         box: tuple[int, int, int, int],
@@ -203,14 +294,23 @@ class RpImageRenderer(BaseRpImageRenderer):
         canvas.alpha_composite(overlay)
 
     @staticmethod
-    def _center_daily_text(draw, width: int, text: str, y: int, font, fill, stroke_fill=None) -> None:
+    def _center_daily_text(
+        draw,
+        width: int,
+        text: str,
+        y: int,
+        font,
+        fill,
+        stroke_fill=None,
+        stroke_width: int = 0,
+    ) -> None:
         box = draw.textbbox((0, 0), text, font=font)
         draw.text(
             ((width - (box[2] - box[0])) // 2, y),
             text,
             font=font,
             fill=fill,
-            stroke_width=2 if stroke_fill else 0,
+            stroke_width=stroke_width if stroke_fill else 0,
             stroke_fill=stroke_fill,
         )
 
@@ -293,15 +393,28 @@ class RpImageRenderer(BaseRpImageRenderer):
         lines: list[str],
         primary,
         stroke_fill=None,
+        stroke_width: int = 0,
+        surface_fill=(0, 0, 0, 0),
+        surface_outline=(0, 0, 0, 0),
     ) -> None:
         draw = ImageDraw.Draw(canvas)
         accent = self.DAILY_FIELD_COLORS.get(field, (100, 116, 139))
+        if surface_fill[3] or surface_outline[3]:
+            surface_bottom = y + 34 + len(lines) * (font.size + 5)
+            self._draw_surface(
+                canvas,
+                (x - 12, y - 10, x + width + 12, surface_bottom + 8),
+                18,
+                surface_fill,
+                surface_outline,
+            )
+
         label_font = self.font(15, bold=True)
         label_box = draw.textbbox((0, 0), label, font=label_font)
         label_x = x if side == "left" else x + width - (label_box[2] - label_box[0])
         draw.text(
             (label_x, y), label, font=label_font, fill=(*accent, 255),
-            stroke_width=2 if stroke_fill else 0, stroke_fill=stroke_fill,
+            stroke_width=stroke_width if stroke_fill else 0, stroke_fill=stroke_fill,
         )
         value_y = y + 27
         for line in lines:
@@ -309,7 +422,7 @@ class RpImageRenderer(BaseRpImageRenderer):
             line_x = x if side == "left" else x + width - (line_box[2] - line_box[0])
             draw.text(
                 (line_x, value_y), line, font=font, fill=primary,
-                stroke_width=2 if stroke_fill else 0, stroke_fill=stroke_fill,
+                stroke_width=stroke_width if stroke_fill else 0, stroke_fill=stroke_fill,
             )
             value_y += font.size + 5
 
@@ -329,20 +442,33 @@ class RpImageRenderer(BaseRpImageRenderer):
         stroke_fill=None,
     ) -> None:
         draw = ImageDraw.Draw(canvas)
+        stroke_width: int = 0,
+        surface_fill=(0, 0, 0, 0),
+        surface_outline=(0, 0, 0, 0),
         accent = self.DAILY_FIELD_COLORS.get(field, (100, 116, 139))
         label_font = self.font(16, bold=True)
         title = f"●  {label}"
+        if surface_fill[3] or surface_outline[3]:
+            surface_bottom = y + 38 + len(lines) * (font.size + 7)
+            self._draw_surface(
+                canvas,
+                (x - 12, y - 10, x + width + 12, surface_bottom + 8),
+                18,
+                surface_fill,
+                surface_outline,
+            )
+
         title_box = draw.textbbox((0, 0), title, font=label_font)
         title_x = x + width - (title_box[2] - title_box[0]) if title_right else x
         draw.text(
             (title_x, y), title, font=label_font, fill=(*accent, 255),
-            stroke_width=2 if stroke_fill else 0, stroke_fill=stroke_fill,
+            stroke_width=stroke_width if stroke_fill else 0, stroke_fill=stroke_fill,
         )
         value_y = y + 31
         for line in lines:
             draw.text(
                 (x, value_y), line, font=font, fill=primary,
-                stroke_width=2 if stroke_fill else 0, stroke_fill=stroke_fill,
+                stroke_width=stroke_width if stroke_fill else 0, stroke_fill=stroke_fill,
             )
             value_y += font.size + 7
 

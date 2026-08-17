@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "typography": {
+    "rp_value_font_size": 52,
+    "user_greeting_font_size": 28
+  },
+  "backgrounds": {
+    "default": {
+      "mode": "soft_gradient",
+      "image": "",
+      "image_fit": "cover"
+    },
+    "0": {
+      "mode": "glitch",
+      "image": ""
+    },
+    "100": {
+      "mode": "rainbow",
+      "image": ""
+    }
+  }
+}

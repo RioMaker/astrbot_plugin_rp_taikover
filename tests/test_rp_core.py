@@ -200,6 +200,29 @@ def test_group_leaderboard_only_contains_today_members_and_sorts_scores(tmp_path
     assert leaderboard[0]["avatar_url"].endswith("user-high.png")
 
 
+def test_group_activity_propagates_to_all_known_groups(tmp_path):
+    _, content = load_catalogs()
+    database = LuckDatabase(tmp_path / "cross-group-leaderboard.db", content)
+    database.init()
+    today = database.today_string()
+    previous_date = "2026-08-17"
+
+    database.insert_record_for_test("shared-user", today, 88, random.Random(88))
+    database.track_group_member(
+        "qq:group-b", "shared-user", "旧昵称", date_string=previous_date
+    )
+    database.track_group_member(
+        "qq:group-a", "shared-user", "新昵称", date_string=today
+    )
+
+    group_a = database.get_group_leaderboard("qq:group-a", date_string=today)
+    group_b = database.get_group_leaderboard("qq:group-b", date_string=today)
+
+    assert [entry["user_id"] for entry in group_a] == ["shared-user"]
+    assert [entry["user_id"] for entry in group_b] == ["shared-user"]
+    assert group_a[0]["luck_value"] == group_b[0]["luck_value"] == 88
+
+
 def test_recent_limit_and_total_rank_counts(tmp_path):
     ranks, content = load_catalogs()
     database = LuckDatabase(tmp_path / "history.db", content)

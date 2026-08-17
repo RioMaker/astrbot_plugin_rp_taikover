@@ -627,6 +627,14 @@ class LuckDatabase:
         with self.connect() as connection:
             connection.execute(
                 """
+                UPDATE group_rp_members
+                SET last_rp_date = ?, updated_at = ?
+                WHERE user_id = ?
+                """,
+                (date_string, updated_at, str(user_id)),
+            )
+            connection.execute(
+                """
                 INSERT INTO group_rp_members
                     (group_id, user_id, user_name, avatar_url, last_rp_date, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?)

@@ -55,7 +55,7 @@ class RpImageRenderer(BaseRpImageRenderer):
         coarse_noise = ImageEnhance.Contrast(coarse_noise).enhance(2.35)
         coarse_noise = coarse_noise.resize(size, PILImage.Resampling.NEAREST)
         background = ImageOps.colorize(
-            coarse_noise, black="#030405", white="#899098"
+            coarse_noise, black="#040404", white="#909090"
         ).convert("RGBA")
 
         # 模拟信号不同步：随机切出横条并左右错位。
@@ -85,11 +85,11 @@ class RpImageRenderer(BaseRpImageRenderer):
             )
         for y in range(0, height, 6):
             if rng.random() < 0.55:
-                chroma = rng.choice(((255, 24, 72, 75), (0, 225, 255, 72)))
+                shade = rng.choice((28, 210))
                 offset = rng.choice((-12, -8, 8, 12))
                 draw.rectangle(
                     (x + offset, y, x + segment_width + offset, y + max(2, band_height // 3)),
-                    fill=chroma,
+                    fill=(shade, shade, shade, 75),
                 )
             draw.line((0, y, width, y), fill=(0, 0, 0, 72), width=2)
         for _ in range(7):
@@ -442,9 +442,9 @@ class RpImageRenderer(BaseRpImageRenderer):
         stroke_fill=None,
     ) -> None:
         draw = ImageDraw.Draw(canvas)
-        stroke_width: int = 0,
-        surface_fill=(0, 0, 0, 0),
-        surface_outline=(0, 0, 0, 0),
+        stroke_width: int = 0
+        surface_fill = (0, 0, 0, 0)
+        surface_outline = (0, 0, 0, 0)
         accent = self.DAILY_FIELD_COLORS.get(field, (100, 116, 139))
         label_font = self.font(16, bold=True)
         title = f"●  {label}"

@@ -39,7 +39,7 @@ INTRO_INFO = [
 ]
 
 
-@register("taiko_rp", "Rio", "测一下 taiko 人品", "0.6.0")
+@register("taiko_rp", "Rio", "测一下 taiko 人品", "0.6.1")
 class taikoRP(Star):
     """每日 RP、历史统计与可扩展宜忌内容库。"""
 

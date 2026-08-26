@@ -17,6 +17,38 @@ RP=100 使用全画布彩虹背景，RP=0 使用粗颗粒灰黑雪花屏背景�
 
 雪花颗粒可在 AstrBot 插件配置中调整：`STATIC_BLOCK_SIZE` 越大颗粒越粗，`STATIC_GLITCH_BANDS` 控制横向故障带数量。
 
+## 跨群排行榜
+
+今日 RP 按平台用户 ID 全局保存，不因群聊不同而重新抽取。用户已在 A 群执行 `/rp` 后，在 B 群直接执行 `/rp 排行榜`，插件会先把该用户登记到 B 群排行榜，再复用 A 群的今日 RP；无需在 B 群重复 `/rp`。
+
+排行榜仍然是“本群排行榜”。插件只会同步已经确认过群成员身份的用户，不会把其他群的全部 RP 用户直接暴露到当前群。
+
+## 持久化数据与升级
+
+数据库和头像缓存遵循 [AstrBot 官方插件存储规范](https://docs.astrbot.app/dev/star/guides/storage.html)，位于：
+
+```text
+data/plugin_data/astrbot_plugin_taiko_rp/
+├─ luck_records_advanced.db
+└─ avatar_cache/
+```
+
+该目录独立于 `data/plugins/<插件源码目录>`，普通插件更新、卸载后重新安装不会删除 RP 数据。卸载时如果管理员明确选择“同时删除插件数据”，AstrBot 仍会按用户意图清理持久层；重要数据建议另行备份。
+
+从 v0.6.1 或更早版本首次升级时，旧数据库仍位于插件源码目录。AstrBot 的标准更新流程会先删除旧源码目录，因此请在首次更新前停止 AstrBot，并把：
+
+```text
+data/plugins/<旧插件目录>/luck_records_advanced.db
+```
+
+复制到：
+
+```text
+data/plugin_data/astrbot_plugin_taiko_rp/luck_records_advanced.db
+```
+
+也可以先原位覆盖新版源码并重载一次插件；新版启动时会使用 SQLite backup API 自动迁移旧库并执行完整性检查。目标持久库已经存在时绝不会被旧库覆盖。完成这次迁移后，后续即可正常使用 AstrBot 的插件更新功能。
+
 ## 本地预览（无需 AstrBot）
 
 Windows 双击 `local_test/run_preview.bat`，或在项目根目录运行：
@@ -67,4 +99,4 @@ pip install -r requirements.txt
 python -m pytest -q
 ```
 
-测试覆盖数据库每日复用、群排行榜筛选与排序、近 30 条查询、等级总数、RP 范围筛选、表格校验、0/100 特殊背景、低分无 Logo、统计图和排行榜长图输出。
+测试覆盖数据库每日复用、旧库持久层迁移与防覆盖、跨群排行榜登记、群排行榜筛选与排序、近 30 条查询、等级总数、RP 范围筛选、表格校验、0/100 特殊背景、低分无 Logo、统计图和排行榜长图输出。

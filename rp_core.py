@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import random
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -275,6 +276,49 @@ def parse_optional_rp(value: Any, field_name: str = "RP 范围") -> int | None:
 
 def clamp_rp(value: int) -> int:
     return max(0, min(100, int(value)))
+
+
+def migrate_legacy_database(
+    legacy_path: str | Path,
+    persistent_path: str | Path,
+) -> bool:
+    """将插件目录中的旧 SQLite 数据库安全迁移到 AstrBot 持久层。
+
+    仅当持久层目标不存在、且旧数据库存在时执行迁移。使用 SQLite backup
+    API 而不是直接复制文件，以便正确读取可能存在的 WAL/事务状态。旧文件会
+    保留到插件更新器清理源码目录，便于迁移失败时人工恢复。
+
+    Returns:
+        本次是否实际完成了迁移。
+    """
+    source = Path(legacy_path)
+    target = Path(persistent_path)
+    if target.exists() or not source.is_file():
+        return False
+    if source.resolve() == target.resolve():
+        return False
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.migrating")
+    temporary.unlink(missing_ok=True)
+    try:
+        source_uri = f"{source.resolve().as_uri()}?mode=ro"
+        with closing(
+            sqlite3.connect(source_uri, uri=True, timeout=15)
+        ) as source_connection:
+            with closing(sqlite3.connect(temporary, timeout=15)) as target_connection:
+                source_connection.backup(target_connection)
+                check_result = target_connection.execute("PRAGMA quick_check").fetchone()
+                if not check_result or str(check_result[0]).lower() != "ok":
+                    raise sqlite3.DatabaseError(
+                        f"迁移后的数据库完整性检查失败：{check_result}"
+                    )
+                target_connection.commit()
+        temporary.replace(target)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    return True
 
 
 class LuckDatabase:
@@ -656,6 +700,26 @@ class LuckDatabase:
                     updated_at,
                 ),
             )
+
+    def track_group_member_if_has_today_rp(
+        self,
+        group_id: str,
+        user_id: str,
+        user_name: str,
+        avatar_url: str = "",
+    ) -> bool:
+        """已有全局今日 RP 时，将用户登记到当前群排行榜。"""
+        date_string = self.today_string()
+        if self.get_record(str(user_id), date_string) is None:
+            return False
+        self.track_group_member(
+            group_id,
+            user_id,
+            user_name,
+            avatar_url,
+            date_string=date_string,
+        )
+        return True
 
     def get_group_leaderboard(
         self,

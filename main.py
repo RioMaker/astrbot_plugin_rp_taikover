@@ -13,15 +13,29 @@ from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core import AstrBotConfig
 
 if __package__:
-    from .rp_core import ContentStore, LuckDatabase, RankCatalog, select_content_path
+    from .rp_core import (
+        ContentStore,
+        LuckDatabase,
+        RankCatalog,
+        migrate_legacy_database,
+        select_content_path,
+    )
     from .rp_renderer_effects import RpImageRenderer
 else:  # 兼容直接运行源码进行本地调试
-    from rp_core import ContentStore, LuckDatabase, RankCatalog, select_content_path
+    from rp_core import (
+        ContentStore,
+        LuckDatabase,
+        RankCatalog,
+        migrate_legacy_database,
+        select_content_path,
+    )
     from rp_renderer_effects import RpImageRenderer
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "luck_records_advanced.db"
+PLUGIN_DATA_DIR_NAME = "astrbot_plugin_taiko_rp"
+DB_FILENAME = "luck_records_advanced.db"
+LEGACY_DB_PATH = BASE_DIR / DB_FILENAME
 
 INTRO_INFO = [
     "小咚祈祷中...",
@@ -39,7 +53,7 @@ INTRO_INFO = [
 ]
 
 
-@register("taiko_rp", "Rio", "测一下 taiko 人品", "0.6.1")
+@register("taiko_rp", "Rio", "测一下 taiko 人品", "0.6.2")
 class taikoRP(Star):
     """每日 RP、历史统计与可扩展宜忌内容库。"""
 
@@ -49,16 +63,24 @@ class taikoRP(Star):
         self.admins_id = {str(value) for value in context.get_config().get("admins_id", [])}
 
         self.plugin_dir = Path(__file__).resolve().parent
-        self.plugin_data_dir = StarTools.get_data_dir("astrbot_plugin_rollpig")
+        # AstrBot 官方规范要求持久化文件位于 data/plugin_data/{plugin_name}，
+        # 该目录不会在普通的插件更新或卸载重装中随源码目录一起删除。
+        self.plugin_data_dir = StarTools.get_data_dir(PLUGIN_DATA_DIR_NAME)
         self.resource_dir = self.plugin_dir / "resource"
         self.image_dir = self.resource_dir / "image"
         self.plugin_data_dir.mkdir(parents=True, exist_ok=True)
 
+        database_path = self.plugin_data_dir / DB_FILENAME
+        if migrate_legacy_database(LEGACY_DB_PATH, database_path):
+            logger.info(
+                "taiko_rp：已将旧数据库从插件目录迁移到持久层："
+                f"{database_path}"
+            )
+
         self.rank_catalog = RankCatalog.from_file(self.resource_dir / "ranks.json")
         self.content_path = select_content_path(self.resource_dir)
         self.content_store = ContentStore.from_file(self.content_path)
-        # 保持旧版数据库位置不变，升级后可直接读取既有历史记录。
-        self.database = LuckDatabase(DB_PATH, self.content_store)
+        self.database = LuckDatabase(database_path, self.content_store)
         self.database.init()
         self.renderer = RpImageRenderer(self.resource_dir, self.rank_catalog, config)
         logger.info("taiko_rp：数据库、内容库与图片渲染器初始化完成")
@@ -224,6 +246,7 @@ class taikoRP(Star):
         total_bytes = stats["database_files_bytes"] + avatar_stats["bytes"]
         text = (
             "【RP 存储占用】\n"
+            f"持久层目录：{self.plugin_data_dir}\n"
             f"数据库文件：{self._format_bytes(stats['database_files_bytes'])}\n"
             f"可回收空页：{self._format_bytes(stats['reclaimable_bytes'])}\n"
             f"每日记录：{stats['record_count']} 条"
@@ -336,7 +359,7 @@ class taikoRP(Star):
             await event.send(event.plain_result("RP 统计图生成失败，请检查插件日志。"))
 
     async def rp_leaderboard(self, event: AstrMessageEvent, limit_text: str = ""):
-        """绘制本群当天执行过 /rp 的成员排行榜。"""
+        """绘制本群今日排行榜，并同步已有今日 RP 的命令发起者。"""
         group_id = str(event.get_group_id() or "")
         if not group_id:
             await event.send(event.plain_result("RP 排行榜仅可在群聊中使用。"))
@@ -353,7 +376,21 @@ class taikoRP(Star):
                 await event.send(event.plain_result("排行榜人数必须位于 1~200。"))
                 return
 
-        records = self.database.get_group_leaderboard(self._group_scope(event), limit=limit)
+        group_scope = self._group_scope(event)
+        user_id = str(event.get_sender_id())
+        # 今日 RP 本身按用户全局保存。用户在另一个群已经抽取后，来到本群
+        # 直接查看排行榜也足以证明其群成员身份，无需再次执行 /rp。
+        try:
+            self.database.track_group_member_if_has_today_rp(
+                group_scope,
+                user_id,
+                event.get_sender_name(),
+                self._sender_avatar_url(event),
+            )
+        except Exception:
+            logger.exception("同步排行榜发起者的跨群 RP 记录失败")
+
+        records = self.database.get_group_leaderboard(group_scope, limit=limit)
         if not records:
             await event.send(
                 event.plain_result("本群今天还没有上榜成员，先让大家发送 /rp 吧。")

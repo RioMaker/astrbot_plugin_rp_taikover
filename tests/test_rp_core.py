@@ -12,6 +12,7 @@ from rp_core import (
     ContentStore,
     LuckDatabase,
     RankCatalog,
+    migrate_legacy_database,
     select_content_path,
 )
 
@@ -115,6 +116,41 @@ def test_legacy_database_is_migrated_without_losing_old_fields(tmp_path):
     with database.connect() as connection:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(luck_records)")}
     assert {"content_schema_version", "content_json"} <= columns
+
+
+def test_plugin_directory_database_moves_to_persistent_layer_without_rerolling(
+    tmp_path,
+):
+    _, content = load_catalogs()
+    legacy_path = tmp_path / "plugin" / "luck_records_advanced.db"
+    persistent_path = tmp_path / "data" / "plugin_data" / "taiko" / legacy_path.name
+    legacy = LuckDatabase(legacy_path, content)
+    legacy.init()
+    expected = legacy.get_or_create_today("migration-user", random.Random(42))
+
+    assert migrate_legacy_database(legacy_path, persistent_path) is True
+    migrated = LuckDatabase(persistent_path, content)
+    migrated.init()
+    assert migrated.get_today_record("migration-user") == expected
+    assert legacy_path.exists()
+
+
+def test_existing_persistent_database_is_never_overwritten_by_legacy_database(tmp_path):
+    _, content = load_catalogs()
+    legacy_path = tmp_path / "plugin" / "luck_records_advanced.db"
+    persistent_path = tmp_path / "data" / "luck_records_advanced.db"
+    legacy = LuckDatabase(legacy_path, content)
+    persistent = LuckDatabase(persistent_path, content)
+    legacy.init()
+    persistent.init()
+    legacy.insert_record_for_test("legacy-user", "2026-08-26", 1, random.Random(1))
+    persistent.insert_record_for_test(
+        "persistent-user", "2026-08-26", 99, random.Random(99)
+    )
+
+    assert migrate_legacy_database(legacy_path, persistent_path) is False
+    assert persistent.get_record("persistent-user", "2026-08-26") is not None
+    assert persistent.get_record("legacy-user", "2026-08-26") is None
 
 
 def test_content_schema_labels_are_versioned_and_version_reuse_is_rejected(tmp_path):
@@ -221,6 +257,34 @@ def test_group_activity_propagates_to_all_known_groups(tmp_path):
     assert [entry["user_id"] for entry in group_a] == ["shared-user"]
     assert [entry["user_id"] for entry in group_b] == ["shared-user"]
     assert group_a[0]["luck_value"] == group_b[0]["luck_value"] == 88
+
+
+def test_leaderboard_command_can_register_existing_today_rp_in_a_new_group(tmp_path):
+    _, content = load_catalogs()
+    database = LuckDatabase(tmp_path / "leaderboard-sync.db", content)
+    database.init()
+    today = database.today_string()
+    database.insert_record_for_test("shared-user", today, 88, random.Random(88))
+    database.track_group_member("qq:group-a", "shared-user", "用户 A")
+
+    assert database.get_group_leaderboard("qq:group-b") == []
+    assert database.track_group_member_if_has_today_rp(
+        "qq:group-b", "shared-user", "用户 B"
+    )
+    group_b = database.get_group_leaderboard("qq:group-b")
+    assert [entry["user_id"] for entry in group_b] == ["shared-user"]
+    assert group_b[0]["luck_value"] == 88
+
+
+def test_new_group_registration_requires_an_existing_today_rp(tmp_path):
+    _, content = load_catalogs()
+    database = LuckDatabase(tmp_path / "leaderboard-no-rp.db", content)
+    database.init()
+
+    assert not database.track_group_member_if_has_today_rp(
+        "qq:group-b", "no-rp-user", "未抽取用户"
+    )
+    assert database.get_group_leaderboard("qq:group-b") == []
 
 
 def test_recent_limit_and_total_rank_counts(tmp_path):

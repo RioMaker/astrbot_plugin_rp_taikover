@@ -3,7 +3,6 @@ import sys
 import types
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -44,6 +43,7 @@ def test_main_supports_astrbot_package_loading():
     event.filter = types.SimpleNamespace(
         command=_identity_decorator,
         permission_type=_identity_decorator,
+        llm_tool=_identity_decorator,
     )
     event_filter.PermissionType = types.SimpleNamespace(ADMIN="ADMIN")
     star.Context = type("Context", (), {})
@@ -60,10 +60,15 @@ def test_main_supports_astrbot_package_loading():
     try:
         main_module = importlib.import_module(f"{package_name}.main")
         assert main_module.ContentStore.__module__ == f"{package_name}.rp_core"
-        assert main_module.RpImageRenderer.__module__ == f"{package_name}.rp_renderer_effects"
+        assert (
+            main_module.RpImageRenderer.__module__
+            == f"{package_name}.rp_renderer_effects"
+        )
     finally:
         for module_name in list(sys.modules):
-            if module_name == package_name or module_name.startswith(f"{package_name}."):
+            if module_name == package_name or module_name.startswith(
+                f"{package_name}."
+            ):
                 sys.modules.pop(module_name, None)
         for module_name in reversed(created_modules):
             sys.modules.pop(module_name, None)

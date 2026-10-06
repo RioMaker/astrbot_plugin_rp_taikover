@@ -19,6 +19,7 @@ if __package__:
         RankCatalog,
         migrate_legacy_database,
         select_content_path,
+        validate_query_limit,
     )
     from .rp_renderer_effects import RpImageRenderer
 else:  # 兼容直接运行源码进行本地调试
@@ -28,6 +29,7 @@ else:  # 兼容直接运行源码进行本地调试
         RankCatalog,
         migrate_legacy_database,
         select_content_path,
+        validate_query_limit,
     )
     from rp_renderer_effects import RpImageRenderer
 
@@ -53,14 +55,16 @@ INTRO_INFO = [
 ]
 
 
-@register("taiko_rp", "Rio", "测一下 taiko 人品", "0.6.2")
+@register("taiko_rp", "Rio", "测一下 taiko 人品", "0.7.0")
 class taikoRP(Star):
     """每日 RP、历史统计与可扩展宜忌内容库。"""
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
-        self.admins_id = {str(value) for value in context.get_config().get("admins_id", [])}
+        self.admins_id = {
+            str(value) for value in context.get_config().get("admins_id", [])
+        }
 
         self.plugin_dir = Path(__file__).resolve().parent
         # AstrBot 官方规范要求持久化文件位于 data/plugin_data/{plugin_name}，
@@ -73,8 +77,7 @@ class taikoRP(Star):
         database_path = self.plugin_data_dir / DB_FILENAME
         if migrate_legacy_database(LEGACY_DB_PATH, database_path):
             logger.info(
-                "taiko_rp：已将旧数据库从插件目录迁移到持久层："
-                f"{database_path}"
+                f"taiko_rp：已将旧数据库从插件目录迁移到持久层：{database_path}"
             )
 
         self.rank_catalog = RankCatalog.from_file(self.resource_dir / "ranks.json")
@@ -90,6 +93,193 @@ class taikoRP(Star):
         result["rp_id"] = self.rank_catalog.result_icon_for_score(result["luck_value"])
         result["user_name"] = user_name
         return result
+
+    def _format_record_text(self, record: dict) -> str:
+        """保留抽取时的全部字段及版本标签，供聊天模型和历史命令读取。"""
+        rank = self.rank_catalog.for_score(record["luck_value"])
+        lines = [f"{record['date']}：RP {record['luck_value']} / {rank.name}"]
+        labels = record.get("content_labels", {})
+        lines.extend(
+            f"{labels.get(key, key)}：{value}"
+            for key, value in record.get("content_fields", {}).items()
+        )
+        return "\n".join(lines)
+
+    async def _get_today_rp_record(self, event: AstrMessageEvent) -> dict:
+        """命令和 LLM 共用抽取、每日复用及群成员登记流程。"""
+        user_id = str(event.get_sender_id())
+        record = await asyncio.to_thread(self.database.get_or_create_today, user_id)
+        group_scope = self._group_scope(event)
+        if group_scope:
+            try:
+                await asyncio.to_thread(
+                    self.database.track_group_member,
+                    group_scope,
+                    user_id,
+                    event.get_sender_name(),
+                    self._sender_avatar_url(event),
+                    date_string=record["date"],
+                )
+            except Exception:
+                logger.exception("记录群 RP 排行榜成员失败")
+        return record
+
+    def _get_statistics_data(self, user_id: str) -> tuple[list[dict], dict[str, int]]:
+        records = self.database.get_recent_records(user_id, limit=30)
+        counts = self.database.count_ranks(user_id, self.rank_catalog)
+        return records, counts
+
+    async def _get_leaderboard_records(
+        self, event: AstrMessageEvent, limit: int
+    ) -> list[dict]:
+        group_scope = self._group_scope(event)
+        if not group_scope:
+            raise ValueError("RP 排行榜仅可在群聊中使用。")
+        # 复用已有今日记录，确认当前群成员身份，不替用户生成新 RP。
+        try:
+            await asyncio.to_thread(
+                self.database.track_group_member_if_has_today_rp,
+                group_scope,
+                str(event.get_sender_id()),
+                event.get_sender_name(),
+                self._sender_avatar_url(event),
+            )
+        except Exception:
+            logger.exception("同步排行榜发起者的跨群 RP 记录失败")
+        return await asyncio.to_thread(
+            self.database.get_group_leaderboard, group_scope, limit=limit
+        )
+
+    @filter.llm_tool(name="get_today_rp")
+    async def get_today_rp(
+        self, event: AstrMessageEvent, show_image: bool = True
+    ) -> str:
+        """获取当前发送者的今日 RP、人品、运势及全部宜忌内容，等同于 /rp。
+
+        今天尚未抽取时生成并保存；已抽取时复用原记录。按北京时间换日。
+        默认发送原有 RP 图片，同时返回真实记录供你解读；查询历史用 get_rp_history。
+
+        Args:
+            show_image(boolean): 是否向当前会话发送 RP 图片，默认 true；仅需文字解读时用 false
+        """
+        if not isinstance(show_image, bool):
+            return "show_image 必须是布尔值 true 或 false。"
+        try:
+            record = await self._get_today_rp_record(event)
+            if show_image:
+                await self.send_rendered_rp(
+                    event,
+                    self._decorate_record(record, event.get_sender_name()),
+                    str(event.get_sender_id()),
+                )
+            return (
+                f"【{event.get_sender_name()} 的今日 RP（北京时间）】\n"
+                + self._format_record_text(record)
+            )
+        except Exception:
+            logger.exception("LLM 获取今日 RP 失败")
+            return "今日 RP 获取失败，请稍后重试或检查插件日志。"
+
+    @filter.llm_tool(name="get_rp_history")
+    async def get_rp_history(
+        self,
+        event: AstrMessageEvent,
+        start_date: str = "",
+        end_date: str = "",
+        limit: int = 30,
+    ) -> str:
+        """查询当前发送者已保存的历史 RP 及当时的签文、幸运色、宜忌等完整内容。
+
+        对应 /rp 历史；只查询真实历史，不补抽缺失日期，不查询其他人的私人历史。
+        指定某一天时将 start_date 和 end_date 设为同一天；日期边界包含当天。
+        默认取最近 30 条记录（不是最近 30 个日历日），按日期从旧到新返回。
+
+        Args:
+            start_date(string): 开始日期 YYYY-MM-DD，留空不限下界，按北京时间理解日期
+            end_date(string): 结束日期 YYYY-MM-DD，留空不限上界
+            limit(number): 最多返回的记录条数，1~365 的整数，默认 30
+        """
+        try:
+            records = await asyncio.to_thread(
+                self.database.get_history_records,
+                str(event.get_sender_id()),
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+            )
+            if not records:
+                return "所查询范围内没有已保存的 RP 记录；未补抽或生成任何记录。"
+            return (
+                f"【{event.get_sender_name()} 的 RP 历史（北京时间）】\n"
+                f"返回范围内最近 {len(records)} 条已保存记录，按日期从旧到新排列；"
+                "未抽取的日期没有记录。\n\n"
+                + "\n\n".join(self._format_record_text(record) for record in records)
+            )
+        except ValueError as exc:
+            return f"历史 RP 查询参数无效：{exc}"
+        except Exception:
+            logger.exception("查询历史 RP 失败")
+            return "历史 RP 查询失败，请稍后重试或检查插件日志。"
+
+    @filter.llm_tool(name="get_rp_statistics")
+    async def get_rp_statistics(self, event: AstrMessageEvent) -> str:
+        """获取当前发送者最近 30 条 RP 分数和全部历史等级计数，等同于 /rp 统计。
+
+        返回可直接分析的文字数据。近 30 条是抽取记录数，不是日历天数；
+        等级计数覆盖全部已保存历史。需要某天完整宜忌内容时用 get_rp_history。
+        """
+        try:
+            records, counts = await asyncio.to_thread(
+                self._get_statistics_data, str(event.get_sender_id())
+            )
+            if not records:
+                return "还没有 RP 记录，可以用 get_today_rp 抽取今天的 RP。"
+            scores = "\n".join(
+                f"{record['date']}：RP {record['luck_value']} / "
+                f"{self.rank_catalog.for_score(record['luck_value']).name}"
+                for record in records
+            )
+            ranks = "\n".join(
+                f"{rank.name}：{counts[rank.id]} 次" for rank in self.rank_catalog.ranks
+            )
+            return (
+                f"【{event.get_sender_name()} 的 RP 统计（北京时间）】\n"
+                f"最近 {len(records)} 条记录（从旧到新）：\n{scores}\n\n"
+                f"全部已保存历史：{sum(counts.values())} 条\n{ranks}"
+            )
+        except Exception:
+            logger.exception("LLM 获取 RP 统计失败")
+            return "RP 统计获取失败，请稍后重试或检查插件日志。"
+
+    @filter.llm_tool(name="get_rp_leaderboard")
+    async def get_rp_leaderboard(self, event: AstrMessageEvent, limit: int = 50) -> str:
+        """获取当前群的今日 RP 排行榜，等同于 /rp 排行榜；只在群聊可用。
+
+        仅返回插件已确认的本群成员，按 RP 降序排列，不代表全部群成员。
+        复用当前发送者已抽取的今日 RP 并登记到本群；不会为任何人重新抽取。
+
+        Args:
+            limit(number): 排行榜人数，1~200 的整数，默认 50
+        """
+        try:
+            limit = validate_query_limit(limit, 200)
+            records = await self._get_leaderboard_records(event, limit)
+            if not records:
+                return "本群今天还没有上榜成员，先让大家发送 /rp 吧。"
+            lines = [
+                f"{index}. {record['user_name']}：RP {record['luck_value']} / "
+                f"{self.rank_catalog.for_score(record['luck_value']).name}"
+                for index, record in enumerate(records, 1)
+            ]
+            return (
+                f"【本群今日 RP 排行榜 · {records[0]['date']}（北京时间）】\n"
+                "仅包含插件已确认且有今日 RP 的本群成员。\n" + "\n".join(lines)
+            )
+        except ValueError as exc:
+            return str(exc)
+        except Exception:
+            logger.exception("LLM 获取群 RP 排行榜失败")
+            return "群 RP 排行榜获取失败，请稍后重试或检查插件日志。"
 
     @staticmethod
     def _object_value(source, key: str):
@@ -134,7 +324,9 @@ class taikoRP(Star):
             platform_name = str(event.get_platform_name() or "").lower()
         except Exception:
             platform_name = ""
-        if user_id.isdigit() and ("qq" in platform_name or "aiocqhttp" in platform_name):
+        if user_id.isdigit() and (
+            "qq" in platform_name or "aiocqhttp" in platform_name
+        ):
             return f"https://q1.qlogo.cn/g?b=qq&nk={user_id}&s=640"
         return ""
 
@@ -204,7 +396,11 @@ class taikoRP(Star):
 
     def _avatar_cache_stats(self) -> dict[str, int]:
         cache_dir = self.plugin_data_dir / "avatar_cache"
-        files = [path for path in cache_dir.rglob("*") if path.is_file()] if cache_dir.exists() else []
+        files = (
+            [path for path in cache_dir.rglob("*") if path.is_file()]
+            if cache_dir.exists()
+            else []
+        )
         return {
             "file_count": len(files),
             "bytes": sum(path.stat().st_size for path in files),
@@ -239,10 +435,13 @@ class taikoRP(Star):
             asyncio.to_thread(self.database.storage_stats),
             asyncio.to_thread(self._avatar_cache_stats),
         )
-        versions = "、".join(
-            f"v{version}: {amount} 条"
-            for version, amount in stats["schema_versions"].items()
-        ) or "无记录"
+        versions = (
+            "、".join(
+                f"v{version}: {amount} 条"
+                for version, amount in stats["schema_versions"].items()
+            )
+            or "无记录"
+        )
         total_bytes = stats["database_files_bytes"] + avatar_stats["bytes"]
         text = (
             "【RP 存储占用】\n"
@@ -273,7 +472,9 @@ class taikoRP(Star):
         try:
             days = int(days_text.strip())
         except ValueError:
-            await event.send(event.plain_result("用法：/rp 清理 <保留天数>，例如 /rp 清理 30"))
+            await event.send(
+                event.plain_result("用法：/rp 清理 <保留天数>，例如 /rp 清理 30")
+            )
             return
         if not 0 <= days <= 36500:
             await event.send(event.plain_result("保留天数必须位于 0~36500。"))
@@ -282,7 +483,9 @@ class taikoRP(Star):
             asyncio.to_thread(self.database.purge_older_than, days),
             asyncio.to_thread(self._purge_avatar_cache, days),
         )
-        total_reclaimed = database_result["reclaimed_bytes"] + avatar_result["bytes_deleted"]
+        total_reclaimed = (
+            database_result["reclaimed_bytes"] + avatar_result["bytes_deleted"]
+        )
         text = (
             "【RP 过期数据清理完成】\n"
             f"清理边界：早于 {database_result['cutoff_date']}\n"
@@ -328,6 +531,7 @@ class taikoRP(Star):
             "【RP 命令帮助】\n"
             "/rp　　　　　　　　查看/生成今天的运势\n"
             "/rp 统计　　　　　 查看近 30 次波动与全部等级统计\n"
+            "/rp 历史 [日期/条数] 查看某日或最近 N 条已保存记录\n"
             "/rp 排行榜 [人数]　 查看本群今日排行，默认 50，最多 200\n"
             "/rp 存储　　　　　 管理员查看数据库与缓存占用\n"
             "/rp 清理 <天数>　　 管理员删除指定天数以前的数据\n"
@@ -339,11 +543,12 @@ class taikoRP(Star):
     async def rp_statistics(self, event: AstrMessageEvent):
         """绘制近 30 次 RP 折线和全历史等级数量。"""
         user_id = str(event.get_sender_id())
-        records = self.database.get_recent_records(user_id, limit=30)
+        records, counts = await asyncio.to_thread(self._get_statistics_data, user_id)
         if not records:
-            await event.send(event.plain_result("还没有 RP 记录，先发送 /rp 抽取今天的 RP 吧。"))
+            await event.send(
+                event.plain_result("还没有 RP 记录，先发送 /rp 抽取今天的 RP 吧。")
+            )
             return
-        counts = self.database.count_ranks(user_id, self.rank_catalog)
         try:
             image_path = await asyncio.to_thread(
                 self.renderer.render_statistics_image,
@@ -357,6 +562,17 @@ class taikoRP(Star):
         except Exception:
             logger.exception("生成 RP 统计图失败")
             await event.send(event.plain_result("RP 统计图生成失败，请检查插件日志。"))
+
+    async def rp_history(self, event: AstrMessageEvent, argument: str = ""):
+        """查看指定日期或最近 N 条已保存的完整历史内容。"""
+        argument = argument.strip()
+        if "-" in argument:
+            text = await self.get_rp_history(
+                event, start_date=argument, end_date=argument, limit=1
+            )
+        else:
+            text = await self.get_rp_history(event, limit=argument or 30)
+        await event.send(event.plain_result(text))
 
     async def rp_leaderboard(self, event: AstrMessageEvent, limit_text: str = ""):
         """绘制本群今日排行榜，并同步已有今日 RP 的命令发起者。"""
@@ -376,21 +592,7 @@ class taikoRP(Star):
                 await event.send(event.plain_result("排行榜人数必须位于 1~200。"))
                 return
 
-        group_scope = self._group_scope(event)
-        user_id = str(event.get_sender_id())
-        # 今日 RP 本身按用户全局保存。用户在另一个群已经抽取后，来到本群
-        # 直接查看排行榜也足以证明其群成员身份，无需再次执行 /rp。
-        try:
-            self.database.track_group_member_if_has_today_rp(
-                group_scope,
-                user_id,
-                event.get_sender_name(),
-                self._sender_avatar_url(event),
-            )
-        except Exception:
-            logger.exception("同步排行榜发起者的跨群 RP 记录失败")
-
-        records = self.database.get_group_leaderboard(group_scope, limit=limit)
+        records = await self._get_leaderboard_records(event, limit)
         if not records:
             await event.send(
                 event.plain_result("本群今天还没有上榜成员，先让大家发送 /rp 吧。")
@@ -406,10 +608,14 @@ class taikoRP(Star):
             )
             sent = await self._send_generated_image(event, image_path, "群 RP 排行榜")
             if not sent:
-                await event.send(event.plain_result("群 RP 排行榜发送失败，请稍后重试。"))
+                await event.send(
+                    event.plain_result("群 RP 排行榜发送失败，请稍后重试。")
+                )
         except Exception:
             logger.exception("生成群 RP 排行榜失败")
-            await event.send(event.plain_result("群 RP 排行榜生成失败，请检查插件日志。"))
+            await event.send(
+                event.plain_result("群 RP 排行榜生成失败，请检查插件日志。")
+            )
 
     @filter.command("rp")
     async def rp(self, event: AstrMessageEvent, action: str = "", argument: str = ""):
@@ -418,6 +624,9 @@ class taikoRP(Star):
         normalized_action = action.strip().lower()
         if normalized_action in {"统计", "stats"}:
             await self.rp_statistics(event)
+            return
+        if normalized_action in {"历史", "history"}:
+            await self.rp_history(event, argument)
             return
         if normalized_action in {"排行榜", "排行", "rank", "ranking"}:
             await self.rp_leaderboard(event, argument)
@@ -442,18 +651,7 @@ class taikoRP(Star):
 
         user_id = str(event.get_sender_id())
         logger.info(f"taiko_rp user_id: {user_id}")
-        record = self.database.get_or_create_today(user_id)
-        group_scope = self._group_scope(event)
-        if group_scope:
-            try:
-                self.database.track_group_member(
-                    group_scope,
-                    user_id,
-                    event.get_sender_name(),
-                    self._sender_avatar_url(event),
-                )
-            except Exception:
-                logger.exception("记录群 RP 排行榜成员失败")
+        record = await self._get_today_rp_record(event)
         record = self._decorate_record(record, event.get_sender_name())
         await self.send_rendered_rp(event, record, user_id)
 
@@ -520,7 +718,11 @@ class taikoRP(Star):
                 for key in ("fortune_text", "color", "advice_do", "advice_dont")
                 if rp_data.get(key)
             }
-        labels = rp_data.get("content_labels") if isinstance(rp_data.get("content_labels"), dict) else {}
+        labels = (
+            rp_data.get("content_labels")
+            if isinstance(rp_data.get("content_labels"), dict)
+            else {}
+        )
         content_lines = [
             f"{labels.get(key, key)}：{value}" for key, value in fields.items()
         ]
@@ -528,16 +730,19 @@ class taikoRP(Star):
             "【今日运势】\n"
             f"《{rank.name}》\n"
             f"Hi~ “{event.get_sender_name()}”\n"
-            f"今日人品（RP）值：{rp_data['luck_value']}\n"
-            + "\n".join(content_lines)
+            f"今日人品（RP）值：{rp_data['luck_value']}\n" + "\n".join(content_lines)
         )
         message_chain = []
         image_path = None
         if int(rp_data["luck_value"]) >= 50:
-            image_path = self.renderer.find_image_file(str(rp_data.get("rp_id", rank.icon)))
+            image_path = self.renderer.find_image_file(
+                str(rp_data.get("rp_id", rank.icon))
+            )
         if image_path and image_path.exists():
             try:
-                message_chain.append(Comp.Image.fromFileSystem(str(image_path.absolute())))
+                message_chain.append(
+                    Comp.Image.fromFileSystem(str(image_path.absolute()))
+                )
             except Exception:
                 logger.exception("发送原始等级图片失败")
         message_chain.append(Comp.Plain(text_msg))

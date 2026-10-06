@@ -5,10 +5,9 @@ import random
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
-
 
 CHINA_TZ = timezone(timedelta(hours=8))
 BASE_CONTENT_KEYS = ("fortune_texts", "colors", "advice_do", "advice_dont")
@@ -37,6 +36,45 @@ DEFAULT_CONTENT_LABELS = {
 SNAPSHOT_FORMAT_VERSION = 1
 
 
+def validate_history_query(
+    start_date: str = "", end_date: str = "", limit: int = 30
+) -> tuple[str, str, int]:
+    """校验历史查询边界；空日期表示不限，记录数最多 365 条。"""
+    dates = []
+    for value in (start_date, end_date):
+        if not isinstance(value, str):
+            raise ValueError("日期必须使用 YYYY-MM-DD 格式")
+        value = value.strip()
+        if value:
+            try:
+                parsed = date.fromisoformat(value)
+            except ValueError as exc:
+                raise ValueError("日期必须是有效的 YYYY-MM-DD 日期") from exc
+            if parsed.isoformat() != value:
+                raise ValueError("日期必须使用 YYYY-MM-DD 格式")
+        dates.append(value)
+    start_date, end_date = dates
+    if start_date and end_date and start_date > end_date:
+        raise ValueError("开始日期不能晚于结束日期")
+    return start_date, end_date, validate_query_limit(limit, 365)
+
+
+def validate_query_limit(value: int, maximum: int) -> int:
+    """拒绝布尔值、小数和超范围值，兼容模型传入的整数型浮点数。"""
+    message = f"查询数量必须是 1~{maximum} 的整数"
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(message)
+    try:
+        parsed = int(value)
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise ValueError(message) from exc
+    if isinstance(value, float) and value != parsed:
+        raise ValueError(message)
+    if not 1 <= parsed <= maximum:
+        raise ValueError(message)
+    return parsed
+
+
 def content_field_name(category: str) -> str:
     return CONTENT_FIELD_ALIASES.get(category, category)
 
@@ -45,7 +83,8 @@ def select_content_path(resource_dir: str | Path) -> Path:
     """选择 schema_version 最高的内容库，当前 content2 会优先于旧版 content。"""
     resource_dir = Path(resource_dir)
     candidates = [
-        path for path in (resource_dir / "content.json", resource_dir / "content2.json")
+        path
+        for path in (resource_dir / "content.json", resource_dir / "content2.json")
         if path.exists()
     ]
     if not candidates:
@@ -89,7 +128,9 @@ class RankCatalog:
         for index, item in enumerate(raw, start=1):
             try:
                 icon = str(item["icon"])
-                result_icons = tuple(str(value) for value in item.get("result_icons", [icon]))
+                result_icons = tuple(
+                    str(value) for value in item.get("result_icons", [icon])
+                )
                 ranks.append(
                     RankDefinition(
                         id=str(item["id"]),
@@ -116,13 +157,17 @@ class RankCatalog:
         for rp_value in range(101):
             matched = [rank for rank in self.ranks if rank.contains(rp_value)]
             if len(matched) != 1:
-                raise ValueError(f"RP={rp_value} 必须且只能匹配一个等级，当前匹配 {len(matched)} 个")
+                raise ValueError(
+                    f"RP={rp_value} 必须且只能匹配一个等级，当前匹配 {len(matched)} 个"
+                )
 
     def for_score(self, rp_value: int) -> RankDefinition:
         rp_value = clamp_rp(rp_value)
         return next(rank for rank in self.ranks if rank.contains(rp_value))
 
-    def result_icon_for_score(self, rp_value: int, rng: random.Random | None = None) -> str:
+    def result_icon_for_score(
+        self, rp_value: int, rng: random.Random | None = None
+    ) -> str:
         rank = self.for_score(rp_value)
         chooser = rng or random
         return chooser.choice(rank.result_icons)
@@ -201,7 +246,9 @@ class ContentStore:
                 parse_content_item(value, key, index)
                 for index, value in enumerate(values, 1)
             ]
-        labels = raw.get("categories") if isinstance(raw.get("categories"), dict) else {}
+        labels = (
+            raw.get("categories") if isinstance(raw.get("categories"), dict) else {}
+        )
         return cls(
             parsed,
             path,
@@ -221,11 +268,15 @@ class ContentStore:
         candidates = self.eligible(category, rp_value)
         if not candidates:
             source = f"（{self.source_path}）" if self.source_path else ""
-            raise ValueError(f"内容库 {category} 在 RP={rp_value} 时没有可用内容{source}")
+            raise ValueError(
+                f"内容库 {category} 在 RP={rp_value} 时没有可用内容{source}"
+            )
         chooser = rng or random
         return chooser.choice(candidates)
 
-    def make_fortune(self, rp_value: int, rng: random.Random | None = None) -> dict[str, Any]:
+    def make_fortune(
+        self, rp_value: int, rng: random.Random | None = None
+    ) -> dict[str, Any]:
         rp_value = clamp_rp(rp_value)
         chooser = rng or random
         fields = {
@@ -308,7 +359,9 @@ def migrate_legacy_database(
         ) as source_connection:
             with closing(sqlite3.connect(temporary, timeout=15)) as target_connection:
                 source_connection.backup(target_connection)
-                check_result = target_connection.execute("PRAGMA quick_check").fetchone()
+                check_result = target_connection.execute(
+                    "PRAGMA quick_check"
+                ).fetchone()
                 if not check_result or str(check_result[0]).lower() != "ok":
                     raise sqlite3.DatabaseError(
                         f"迁移后的数据库完整性检查失败：{check_result}"
@@ -406,8 +459,7 @@ class LuckDatabase:
                 (version,),
             ).fetchone()
         labels = (
-            self._decode_schema_labels(str(row["definition_json"] or ""))
-            if row else {}
+            self._decode_schema_labels(str(row["definition_json"] or "")) if row else {}
         )
         self._schema_labels_cache[version] = labels
         return labels
@@ -432,7 +484,9 @@ class LuckDatabase:
             )
             columns = {
                 str(row["name"])
-                for row in connection.execute("PRAGMA table_info(luck_records)").fetchall()
+                for row in connection.execute(
+                    "PRAGMA table_info(luck_records)"
+                ).fetchall()
             }
             if "content_schema_version" not in columns:
                 connection.execute(
@@ -506,7 +560,9 @@ class LuckDatabase:
         if raw_snapshot:
             try:
                 payload = json.loads(raw_snapshot)
-                raw_fields = payload.get("fields", payload) if isinstance(payload, dict) else {}
+                raw_fields = (
+                    payload.get("fields", payload) if isinstance(payload, dict) else {}
+                )
                 if isinstance(raw_fields, dict):
                     fields = {
                         str(key): str(value)
@@ -575,7 +631,11 @@ class LuckDatabase:
                 str(user_id),
                 date_string,
                 int(record["luck_value"]),
-                int(record.get("content_schema_version", self.content_store.schema_version)),
+                int(
+                    record.get(
+                        "content_schema_version", self.content_store.schema_version
+                    )
+                ),
                 self._snapshot_json(record),
             ),
         )
@@ -625,22 +685,47 @@ class LuckDatabase:
             if row:
                 return self._row_to_record(row)
             record = self.build_record(rng=rng)
-            record_id = self._insert_record(connection, str(user_id), date_string, record)
+            record_id = self._insert_record(
+                connection, str(user_id), date_string, record
+            )
             record.update({"id": record_id, "date": date_string})
             return record
 
     def get_recent_records(self, user_id: str, limit: int = 30) -> list[dict[str, Any]]:
         limit = max(1, min(365, int(limit)))
+        return self.get_history_records(user_id, limit=limit)
+
+    def get_history_records(
+        self,
+        user_id: str,
+        start_date: str = "",
+        end_date: str = "",
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        """只读查询已保存的内容快照；取范围内最近 N 条并按日期升序返回。"""
+        start_date, end_date, limit = validate_history_query(
+            start_date, end_date, limit
+        )
+        conditions = ["user_id = ?"]
+        parameters: list[Any] = [str(user_id)]
+        if start_date:
+            conditions.append("date >= ?")
+            parameters.append(start_date)
+        if end_date:
+            conditions.append("date <= ?")
+            parameters.append(end_date)
+        parameters.append(limit)
+        where_clause = " AND ".join(conditions)
         with self.connect() as connection:
             rows = connection.execute(
                 f"""
                 SELECT {self.RECORD_COLUMNS}
                 FROM luck_records
-                WHERE user_id = ?
+                WHERE {where_clause}
                 ORDER BY date DESC, id DESC
                 LIMIT ?
                 """,
-                (str(user_id), limit),
+                parameters,
             ).fetchall()
         return [self._row_to_record(row) for row in reversed(rows)]
 
@@ -786,7 +871,9 @@ class LuckDatabase:
                 """
             ).fetchone()
             group_member_count = int(
-                connection.execute("SELECT COUNT(*) FROM group_rp_members").fetchone()[0]
+                connection.execute("SELECT COUNT(*) FROM group_rp_members").fetchone()[
+                    0
+                ]
             )
             schema_versions = {
                 int(row["content_schema_version"]): int(row["amount"])
@@ -818,7 +905,9 @@ class LuckDatabase:
             Path(f"{self.path}-journal"),
         ]
         database_files_bytes = sum(
-            path.stat().st_size for path in file_paths if path.exists() and path.is_file()
+            path.stat().st_size
+            for path in file_paths
+            if path.exists() and path.is_file()
         )
         record_count = int(summary["record_count"] or 0)
         snapshot_count = int(summary["snapshot_count"] or 0)
@@ -832,7 +921,9 @@ class LuckDatabase:
             "newest_date": summary["newest_date"],
             "snapshot_count": snapshot_count,
             "snapshot_bytes": snapshot_bytes,
-            "average_snapshot_bytes": snapshot_bytes / snapshot_count if snapshot_count else 0,
+            "average_snapshot_bytes": snapshot_bytes / snapshot_count
+            if snapshot_count
+            else 0,
             "legacy_content_bytes": int(summary["legacy_content_bytes"] or 0),
             "schema_versions": schema_versions,
             "schema_definition_count": int(schema_summary["definition_count"] or 0),
@@ -843,7 +934,9 @@ class LuckDatabase:
         days = int(days)
         if not 0 <= days <= 36500:
             raise ValueError("保留天数必须位于 0~36500")
-        cutoff_date = (datetime.now(CHINA_TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
+        cutoff_date = (datetime.now(CHINA_TZ) - timedelta(days=days)).strftime(
+            "%Y-%m-%d"
+        )
         before_bytes = int(self.storage_stats()["database_files_bytes"])
         with self.connect() as connection:
             records_deleted = connection.execute(
@@ -877,7 +970,9 @@ class LuckDatabase:
     ) -> dict[str, Any]:
         record = self.build_record(rp_value, rng)
         with self.connect() as connection:
-            record_id = self._insert_record(connection, str(user_id), date_string, record)
+            record_id = self._insert_record(
+                connection, str(user_id), date_string, record
+            )
         record.update({"id": record_id, "date": date_string})
         return record
 
